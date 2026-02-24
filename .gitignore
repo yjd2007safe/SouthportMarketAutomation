@@ -2,3 +2,6 @@ __pycache__/
 .env
 .venv/
 data/raw/
+.dev_pipeline/
+error.log
+.vercel/
