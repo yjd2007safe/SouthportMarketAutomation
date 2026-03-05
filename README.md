@@ -80,3 +80,40 @@ scripts/run_ingest.sh --source ./path/to/listings.csv --output-dir data/raw --fi
 PYTHONPATH=src python -m analyze --input data/normalized/listings.json --reports-dir reports --prefix market_analysis
 PYTHONPATH=src python -m report --reports-dir reports --analysis-prefix market_analysis --output-prefix market_report
 ```
+
+
+### 6) Run the full daily pipeline in one command
+
+Use `scripts/run_daily.sh` to orchestrate ingest -> normalize -> analyze -> report
+with stage logs, directory bootstrapping, and non-zero exits on failure.
+
+```bash
+scripts/run_daily.sh \
+  --source ./path/to/listings.csv \
+  --date 2025-03-05
+```
+
+Optional overrides:
+
+```bash
+scripts/run_daily.sh \
+  --source https://example.com/listings.json \
+  --raw-dir data/raw \
+  --normalized-dir data/normalized \
+  --reports-dir reports \
+  --log-dir logs/daily \
+  --analysis-prefix market_analysis \
+  --report-prefix market_report
+```
+
+If normalized data already exists, skip ingest/normalize:
+
+```bash
+scripts/run_daily.sh --normalized-input data/normalized/listings.csv
+```
+
+Show CLI help:
+
+```bash
+scripts/run_daily.sh --help
+```
