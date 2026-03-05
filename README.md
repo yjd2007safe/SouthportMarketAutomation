@@ -42,3 +42,23 @@ scripts/run_ingest.sh \
 - `--source` (required): local file path or `http(s)` URL.
 - `--output-dir` (optional): destination directory for generated raw output path (default: `data/raw`).
 - `--filename` (optional): override output filename stem.
+
+
+### 4) Run analysis module
+
+Once you have normalized records (JSON or CSV), run analysis to generate
+machine-readable reports (`.json`, `.csv`) and a markdown summary under
+`reports/` by default.
+
+```bash
+PYTHONPATH=src python -m analyze --input data/normalized/listings.json
+```
+
+Custom output directory and filename prefix:
+
+```bash
+PYTHONPATH=src python -m analyze \
+  --input data/normalized/listings.csv \
+  --reports-dir reports \
+  --prefix weekly_snapshot
+```
