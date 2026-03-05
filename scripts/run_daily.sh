@@ -15,6 +15,8 @@ REPORTS_DIR="reports"
 LOG_DIR="logs/daily"
 ANALYSIS_PREFIX="market_analysis"
 REPORT_PREFIX="market_report"
+WITH_SUPABASE=0
+SUPABASE_SOURCE="southport_daily"
 
 usage() {
   cat <<'USAGE'
@@ -33,6 +35,8 @@ Options:
   --log-dir DIR              Directory for run logs (default: logs/daily).
   --analysis-prefix PREFIX   Prefix for analysis outputs (default: market_analysis).
   --report-prefix PREFIX     Prefix for report outputs (default: market_report).
+  --with-supabase            Run optional Supabase load stage after report.
+  --supabase-source SOURCE   Source label used for Supabase upserts (default: southport_daily).
   -h, --help                 Show this help text.
 
 Notes:
@@ -81,6 +85,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --report-prefix)
       REPORT_PREFIX="${2:-}"
+      shift 2
+      ;;
+    --with-supabase)
+      WITH_SUPABASE=1
+      shift
+      ;;
+    --supabase-source)
+      SUPABASE_SOURCE="${2:-}"
       shift 2
       ;;
     -h|--help)
@@ -186,5 +198,22 @@ log "[stage:analyze] complete"
 log "[stage:report] begin"
 python3 -m report --reports-dir "${REPORTS_DIR}" --analysis-prefix "${ANALYSIS_PREFIX}" --output-prefix "${REPORT_PREFIX}"
 log "[stage:report] complete"
+
+if [[ "${WITH_SUPABASE}" -eq 1 ]]; then
+  log "[stage:supabase_load] begin"
+  LOAD_ARGS=(
+    --normalized-input "${NORMALIZED_PATH}"
+    --summary-json "${REPORTS_DIR}/${ANALYSIS_PREFIX}.json"
+    --date "${DATE}"
+    --source "${SUPABASE_SOURCE}"
+  )
+
+  if [[ -n "${RAW_PATH}" ]]; then
+    LOAD_ARGS+=(--raw-input "${RAW_PATH}")
+  fi
+
+  python3 -m load_to_supabase "${LOAD_ARGS[@]}"
+  log "[stage:supabase_load] complete"
+fi
 
 log "Daily pipeline finished successfully"
