@@ -117,3 +117,32 @@ Show CLI help:
 ```bash
 scripts/run_daily.sh --help
 ```
+
+
+## Supabase persistence
+
+Schema migration SQL for Supabase is provided in:
+
+- `db/migrations/001_supabase_market_tables.sql`
+- `docs/supabase_schema.md`
+
+Set credentials before running the load stage:
+
+```bash
+export SUPABASE_URL="https://<project>.supabase.co"
+export SUPABASE_KEY="<service-role-or-insert-key>"
+```
+
+Run standalone loader:
+
+```bash
+PYTHONPATH=src python -m load_to_supabase   --normalized-input data/normalized/listings.json   --summary-json reports/market_analysis.json   --raw-input data/raw/listings.json   --date 2025-03-05   --source southport_daily
+```
+
+Or enable Supabase loading in the daily orchestrator:
+
+```bash
+scripts/run_daily.sh   --source ./path/to/listings.csv   --date 2025-03-05   --with-supabase   --supabase-source southport_daily
+```
+
+Without `--with-supabase`, local behavior is unchanged.

@@ -61,3 +61,34 @@ def test_run_daily_requires_source_or_normalized_input(tmp_path):
 
     assert result.returncode != 0
     assert "provide --source or --normalized-input" in result.stderr
+
+
+def test_run_daily_with_supabase_requires_env(tmp_path):
+    normalized = tmp_path / "normalized.json"
+    normalized.write_text("[]", encoding="utf-8")
+
+    reports_dir = tmp_path / "reports"
+    log_dir = tmp_path / "logs"
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "run_daily.sh"
+    result = subprocess.run(
+        [
+            "bash",
+            str(script),
+            "--normalized-input",
+            str(normalized),
+            "--date",
+            "2025-03-05",
+            "--reports-dir",
+            str(reports_dir),
+            "--log-dir",
+            str(log_dir),
+            "--with-supabase",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "SUPABASE_URL" in result.stdout or "SUPABASE_URL" in result.stderr
