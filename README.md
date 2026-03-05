@@ -62,3 +62,21 @@ PYTHONPATH=src python -m analyze \
   --reports-dir reports \
   --prefix weekly_snapshot
 ```
+
+
+### 5) Run report module
+
+After `analyze` writes its outputs to `reports/`, run `report` to generate
+final market report artifacts (`.md`, `.csv`, and `.json`) in the same directory.
+
+```bash
+PYTHONPATH=src python -m report   --reports-dir reports   --analysis-prefix market_analysis   --output-prefix market_report
+```
+
+### Full pipeline example (ingest -> analyze -> report)
+
+```bash
+scripts/run_ingest.sh --source ./path/to/listings.csv --output-dir data/raw --filename snapshot
+PYTHONPATH=src python -m analyze --input data/normalized/listings.json --reports-dir reports --prefix market_analysis
+PYTHONPATH=src python -m report --reports-dir reports --analysis-prefix market_analysis --output-prefix market_report
+```
