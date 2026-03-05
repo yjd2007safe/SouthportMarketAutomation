@@ -5,13 +5,14 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import List, Optional, Tuple, Union
 from urllib.parse import urlparse
 
 
 ALLOWED_REMOTE_SCHEMES = {"http", "https"}
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     """Parse command-line arguments for ingest runs."""
     parser = argparse.ArgumentParser(description="Ingest Southport market source data")
     parser.add_argument("--source", required=True, help="Local file path or http(s) URL")
@@ -24,7 +25,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def resolve_source(source: str) -> tuple[str, str]:
+def resolve_source(source: str) -> Tuple[str, str]:
     """Resolve source type and normalized value.
 
     Returns a tuple of (source_type, normalized_value) where source_type is
@@ -39,11 +40,11 @@ def resolve_source(source: str) -> tuple[str, str]:
 
 
 def create_output_path(
-    output_dir: str | Path,
+    output_dir: Union[str, Path],
     source: str,
     *,
-    filename: str | None = None,
-    timestamp: datetime | None = None,
+    filename: Optional[str] = None,
+    timestamp: Optional[datetime] = None,
 ) -> Path:
     """Create output directory if needed and return a deterministic output path."""
     output_dir = Path(output_dir)
