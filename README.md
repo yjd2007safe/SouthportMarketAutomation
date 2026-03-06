@@ -44,6 +44,21 @@ scripts/run_ingest.sh \
 - `--filename` (optional): override output filename stem.
 
 
+
+### Discover source candidates for Southport (or other AU areas)
+
+Generate a structured source list with URL/site/category/confidence/notes:
+
+```bash
+PYTHONPATH=src python -m discover_sources   --area Southport   --include-expansion   --output data/sources/southport_sources.json
+```
+
+Only retain validated ingestable listing/search pages:
+
+```bash
+PYTHONPATH=src python -m discover_sources   --area Southport   --ingestable-only   --output data/sources/southport_ingestable.yaml
+```
+
 ### 4) Run analysis module
 
 Once you have normalized records (JSON or CSV), run analysis to generate
@@ -110,6 +125,14 @@ If normalized data already exists, skip ingest/normalize:
 
 ```bash
 scripts/run_daily.sh --normalized-input data/normalized/listings.csv
+```
+
+To ingest from a discovered source list and iterate ingestable pages:
+
+```bash
+scripts/run_daily.sh \
+  --source-list data/sources/southport_sources.json \
+  --date 2025-03-05
 ```
 
 Show CLI help:
