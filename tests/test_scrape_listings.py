@@ -79,3 +79,18 @@ def test_parse_realestate_initial_state_fixture_extracts_records():
     assert rows[0]["source_site"] == "realestate"
     assert rows[0]["url"].startswith("https://www.realestate.com.au/property-")
     assert rows[0]["rent"] == 850
+
+
+def test_detect_challenge_page_kasada_fixture():
+    html = Path("tests/fixtures_kasada_blockpage.html").read_text(encoding="utf-8")
+    assert scrape_listings.detect_challenge_page(html) == "kasada"
+
+
+def test_detect_challenge_page_incapsula_fixture():
+    html = Path("tests/fixtures_incapsula_blockpage.html").read_text(encoding="utf-8")
+    assert scrape_listings.detect_challenge_page(html) == "incapsula"
+
+
+def test_detect_challenge_page_captcha_fixture():
+    html = Path("tests/fixtures_captcha_blockpage.html").read_text(encoding="utf-8")
+    assert scrape_listings.detect_challenge_page(html) == "captcha"

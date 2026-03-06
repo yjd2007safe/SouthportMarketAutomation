@@ -424,3 +424,186 @@ def test_run_daily_marks_parse_failed_when_html_has_zero_records(tmp_path):
     assert result.returncode != 0
     assert "status=parse_failed" in result.stdout
     assert "parse_failed=1" in result.stdout
+
+
+def test_run_daily_source_list_continues_on_challenge_blocked_html(tmp_path):
+    import functools
+    import http.server
+    import json
+    import socketserver
+    import threading
+
+    source_dir = tmp_path / "http_sources"
+    source_dir.mkdir()
+    blocked_html = Path(__file__).resolve().parent / "fixtures_kasada_blockpage.html"
+    (source_dir / "blocked").write_text(blocked_html.read_text(encoding="utf-8"), encoding="utf-8")
+    (source_dir / "ok.csv").write_text(
+        "rent,snapshot_date,first_seen,last_seen,bedrooms,size_sqft\n"
+        "2200,2025-03-01,2025-02-15,2025-03-05,2,760\n",
+        encoding="utf-8",
+    )
+
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(source_dir))
+    with socketserver.TCPServer(("127.0.0.1", 0), handler) as httpd:
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        port = httpd.server_address[1]
+
+        source_list = tmp_path / "sources.json"
+        source_list.write_text(
+            json.dumps(
+                [
+                    {
+                        "url": f"http://127.0.0.1:{port}/blocked",
+                        "site": "realestate.com.au",
+                        "category": "search",
+                        "confidence": 0.95,
+                        "notes": "kasada blocked",
+                    },
+                    {
+                        "url": f"http://127.0.0.1:{port}/ok.csv",
+                        "site": "local-http",
+                        "category": "search",
+                        "confidence": 0.90,
+                        "notes": "ingestable",
+                    },
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        raw_dir = tmp_path / "raw"
+        normalized_dir = tmp_path / "normalized"
+        reports_dir = tmp_path / "reports"
+        log_dir = tmp_path / "logs"
+
+        script = Path(__file__).resolve().parents[1] / "scripts" / "run_daily.sh"
+        result = subprocess.run(
+            [
+                "bash",
+                str(script),
+                "--source-list",
+                str(source_list),
+                "--date",
+                "2025-03-05",
+                "--raw-dir",
+                str(raw_dir),
+                "--normalized-dir",
+                str(normalized_dir),
+                "--reports-dir",
+                str(reports_dir),
+                "--log-dir",
+                str(log_dir),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        httpd.shutdown()
+        thread.join(timeout=2)
+
+    assert result.returncode == 0, result.stderr
+    assert "status=blocked" in result.stdout
+    assert "challenge:kasada" in result.stdout
+    assert "challenge_blocked=1" in result.stdout
+    assert "status=ok" in result.stdout
+    assert (reports_dir / "market_analysis.json").exists()
+
+
+def test_run_daily_source_list_continues_on_parse_failed_when_one_source_succeeds(tmp_path):
+    import http.server
+    import json
+    import socketserver
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/empty":
+                body = b"<html><body><h1>realestate.com.au</h1><p>no listings</p></body></html>"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            elif self.path == "/ok.csv":
+                body = (
+                    "rent,snapshot_date,first_seen,last_seen,bedrooms,size_sqft\n"
+                    "1950,2025-03-01,2025-02-20,2025-03-05,2,700\n"
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/csv")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, format, *args):
+            return
+
+    with socketserver.TCPServer(("127.0.0.1", 0), Handler) as httpd:
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        port = httpd.server_address[1]
+
+        source_list = tmp_path / "sources.json"
+        source_list.write_text(
+            json.dumps(
+                [
+                    {
+                        "url": f"http://127.0.0.1:{port}/empty",
+                        "site": "realestate.com.au",
+                        "category": "search",
+                        "confidence": 0.95,
+                        "notes": "parse failed",
+                    },
+                    {
+                        "url": f"http://127.0.0.1:{port}/ok.csv",
+                        "site": "local-http",
+                        "category": "search",
+                        "confidence": 0.90,
+                        "notes": "ok",
+                    },
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        raw_dir = tmp_path / "raw"
+        normalized_dir = tmp_path / "normalized"
+        reports_dir = tmp_path / "reports"
+        log_dir = tmp_path / "logs"
+
+        script = Path(__file__).resolve().parents[1] / "scripts" / "run_daily.sh"
+        result = subprocess.run(
+            [
+                "bash",
+                str(script),
+                "--source-list",
+                str(source_list),
+                "--date",
+                "2025-03-05",
+                "--raw-dir",
+                str(raw_dir),
+                "--normalized-dir",
+                str(normalized_dir),
+                "--reports-dir",
+                str(reports_dir),
+                "--log-dir",
+                str(log_dir),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        httpd.shutdown()
+        thread.join(timeout=2)
+
+    assert result.returncode == 0, result.stderr
+    assert "status=parse_failed" in result.stdout
+    assert "parse_failed=1" in result.stdout
+    assert "status=ok" in result.stdout
+    assert (reports_dir / "market_analysis.json").exists()

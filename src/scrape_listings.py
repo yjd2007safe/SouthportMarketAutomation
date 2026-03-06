@@ -31,6 +31,29 @@ _JSON_ASSIGNMENT_RE = re.compile(
 
 _SCRIPT_TAG_RE = re.compile(r"<script[^>]*>(.*?)</script>", re.IGNORECASE | re.DOTALL)
 
+_CHALLENGE_MARKERS = {
+    "kasada": (
+        "kasada",
+        "kpsdk",
+        "_kpsdk_",
+        "x-kpsdk",
+    ),
+    "incapsula": (
+        "incapsula",
+        "_incap_",
+        "imperva",
+        "incident id",
+    ),
+    "captcha": (
+        "captcha",
+        "g-recaptcha",
+        "hcaptcha",
+        "cf-chl-captcha",
+        "are you human",
+        "robot check",
+    ),
+}
+
 
 def _extract_json_object_after_marker(text: str, marker: str) -> List[Any]:
     start = 0
@@ -480,6 +503,15 @@ ADAPTERS: List[SiteAdapter] = [
     RealestateAdapter(),
     DomainAdapter(),
 ]
+
+
+def detect_challenge_page(html: str) -> Optional[str]:
+    """Detect common anti-bot challenge signatures in raw HTML."""
+    lowered = html.lower()
+    for provider, markers in _CHALLENGE_MARKERS.items():
+        if any(marker in lowered for marker in markers):
+            return provider
+    return None
 
 
 def parse_listing_page(url: str, html: str) -> List[Record]:
