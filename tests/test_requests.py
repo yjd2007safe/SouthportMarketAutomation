@@ -14,6 +14,40 @@ def test_validate_url_scheme_rejects_file_scheme():
         requests.validate_url_scheme("file:///etc/passwd")
 
 
+def test_choose_backend_prefers_browser_domain():
+    config = requests.FetchConfig(browser_domains=("realestate.com.au",), proxy_domains=("example.com",))
+    assert requests.choose_backend("https://www.realestate.com.au/rent", config) == "browser"
+
+
+def test_choose_backend_uses_explicit_mapping():
+    config = requests.FetchConfig(domain_backends={"foo.com": "proxy-http"})
+    assert requests.choose_backend("https://sub.foo.com/listings", config) == "proxy-http"
+
+
+def test_fetch_with_policy_falls_back_from_browser_to_http():
+    config = requests.FetchConfig(browser_domains=("realestate.com.au",), proxy_endpoints=())
+
+    def broken_browser(url, timeout):
+        raise RuntimeError("browser unavailable")
+
+    def ok_http(url, **kwargs):
+        return requests.FetchResult(
+            text="ok",
+            diagnostics=requests.FetchDiagnostics(backend="http", attempts=2, outcome="ok"),
+        )
+
+    result = requests.fetch_with_policy(
+        "https://www.realestate.com.au/rent",
+        config=config,
+        browser_fetcher=broken_browser,
+        http_fetcher=ok_http,
+        proxy_http_fetcher=lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("no proxy")),
+    )
+
+    assert result.text == "ok"
+    assert result.diagnostics.backend == "http"
+
+
 def test_fetch_text_happy_path_with_mock_opener():
     class DummyResponse:
         def __enter__(self):
