@@ -59,6 +59,35 @@ Only retain validated ingestable listing/search pages:
 PYTHONPATH=src python -m discover_sources   --area Southport   --ingestable-only   --output data/sources/southport_ingestable.yaml
 ```
 
+
+### Web listing page parsing support (run_daily)
+
+When `run_daily.sh` ingests sources from `--source-list`, web search/listing pages are now parsed into structured listing JSON before analysis.
+
+Supported adapters:
+
+- **onthehouse**: implemented parser for listing/search HTML (prefers JSON-LD, with basic card-text fallback).
+- **realestate**: adapter placeholder present (currently returns no records).
+- **domain**: adapter placeholder present (currently returns no records).
+
+Structured output records include:
+
+- `listing_id` (stable hash id)
+- `url`
+- `address` (when available)
+- `rent` / `price`
+- `bedrooms`
+- `bathrooms` (optional)
+- `size_sqft` (optional)
+- `listed_date` (optional)
+- `source_site`
+- `raw_snippet`
+
+Fallback behavior:
+
+- File/JSON/CSV source modes are preserved and passed through unchanged.
+- Unsupported or non-matching HTML pages normalize to an empty JSON list (`[]`) rather than raw HTML.
+
 ### 4) Run analysis module
 
 Once you have normalized records (JSON or CSV), run analysis to generate

@@ -174,3 +174,78 @@ def test_run_daily_with_source_list_json(tmp_path):
     assert any(normalized_dir.iterdir())
     assert (reports_dir / "market_analysis.json").exists()
     assert (reports_dir / "market_report.json").exists()
+
+
+def test_run_daily_with_source_list_html_parses_to_structured_json(tmp_path):
+    import functools
+    import http.server
+    import json
+    import socketserver
+    import threading
+
+    source_dir = tmp_path / "http_sources"
+    source_dir.mkdir()
+    fixture = Path(__file__).resolve().parent / "fixtures_onthehouse_search.html"
+    (source_dir / "search").write_text(fixture.read_text(encoding="utf-8"), encoding="utf-8")
+
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(source_dir))
+    with socketserver.TCPServer(("127.0.0.1", 0), handler) as httpd:
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        port = httpd.server_address[1]
+
+        source_list = tmp_path / "sources.json"
+        source_list.write_text(
+            json.dumps(
+                [
+                    {
+                        "url": f"http://127.0.0.1:{port}/search",
+                        "site": "onthehouse.com.au",
+                        "category": "search",
+                        "confidence": 0.95,
+                        "notes": "ingestable",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        raw_dir = tmp_path / "raw"
+        normalized_dir = tmp_path / "normalized"
+        reports_dir = tmp_path / "reports"
+        log_dir = tmp_path / "logs"
+
+        script = Path(__file__).resolve().parents[1] / "scripts" / "run_daily.sh"
+        result = subprocess.run(
+            [
+                "bash",
+                str(script),
+                "--source-list",
+                str(source_list),
+                "--date",
+                "2025-03-05",
+                "--raw-dir",
+                str(raw_dir),
+                "--normalized-dir",
+                str(normalized_dir),
+                "--reports-dir",
+                str(reports_dir),
+                "--log-dir",
+                str(log_dir),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        httpd.shutdown()
+        thread.join(timeout=2)
+
+    assert result.returncode == 0, result.stderr
+    normalized_files = list(normalized_dir.glob("*.json"))
+    assert normalized_files
+    payload = json.loads(normalized_files[0].read_text(encoding="utf-8"))
+    assert isinstance(payload, list)
+    assert payload
+    assert payload[0]["listing_id"].startswith("lst_")
+    assert payload[0]["source_site"] == "onthehouse"
