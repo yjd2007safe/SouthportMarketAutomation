@@ -210,21 +210,35 @@ PY
     RAW_PATHS+=("${RAW_PATH}")
     log "[stage:ingest] complete source=${SOURCE_ITEM} raw_path=${RAW_PATH}"
 
-    NORMALIZED_PATH="$(python3 - "${RAW_PATH}" "${NORMALIZED_DIR}" "${DATE}" <<'PY'
+    NORMALIZED_PATH="$(python3 - "${RAW_PATH}" "${NORMALIZED_DIR}" "${DATE}" "${SOURCE_ITEM}" <<'PY'
 from datetime import datetime, timezone
 from pathlib import Path
 import shutil
 import sys
+import json
+from urllib.parse import urlparse
+
+import scrape_listings
 
 raw_path = Path(sys.argv[1])
 normalized_dir = Path(sys.argv[2])
 run_date = datetime.strptime(sys.argv[3], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+source_item = sys.argv[4]
 
 normalized_dir.mkdir(parents=True, exist_ok=True)
-ext = raw_path.suffix.lower() if raw_path.suffix.lower() in {".json", ".csv"} else ".json"
+source_suffix = Path(urlparse(source_item).path).suffix.lower()
+is_structured = source_suffix in {".csv", ".json"}
+ext = source_suffix if is_structured else ".json"
 out_name = f"normalized_{raw_path.stem}_{run_date.strftime('%Y%m%dT%H%M%SZ')}{ext}"
 out_path = normalized_dir / out_name
-shutil.copy2(raw_path, out_path)
+
+if is_structured:
+    shutil.copy2(raw_path, out_path)
+else:
+    html = raw_path.read_text(encoding="utf-8")
+    rows = scrape_listings.parse_listing_page(source_item, html)
+    out_path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+
 print(out_path)
 PY
 )"
