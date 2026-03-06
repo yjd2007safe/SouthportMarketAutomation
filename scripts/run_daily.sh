@@ -19,6 +19,7 @@ REPORT_PREFIX="market_report"
 WITH_SUPABASE=0
 SUPABASE_SOURCE="southport_daily"
 FETCH_MODE="auto"
+STABILITY_PROFILE="default"
 
 usage() {
   cat <<'USAGE'
@@ -41,6 +42,7 @@ Options:
   --with-supabase            Run optional Supabase load stage after report.
   --supabase-source SOURCE   Source label used for Supabase upserts (default: southport_daily).
   --fetch-mode MODE          Fetch mode for URL sources: auto|relay (default: auto).
+  --stability-profile NAME   Fetch stability profile: default|slow (default: default).
   -h, --help                 Show this help text.
 
 Notes:
@@ -68,6 +70,7 @@ while [[ $# -gt 0 ]]; do
     --with-supabase) WITH_SUPABASE=1; shift ;;
     --supabase-source) SUPABASE_SOURCE="${2:-}"; shift 2 ;;
     --fetch-mode) FETCH_MODE="${2:-}"; shift 2 ;;
+    --stability-profile) STABILITY_PROFILE="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *)
       echo "Unknown argument: $1" >&2
@@ -79,6 +82,11 @@ done
 
 if [[ "${FETCH_MODE}" != "auto" && "${FETCH_MODE}" != "relay" ]]; then
   echo "Error: invalid --fetch-mode '${FETCH_MODE}'. Expected auto or relay." >&2
+  exit 2
+fi
+
+if [[ "${STABILITY_PROFILE}" != "default" && "${STABILITY_PROFILE}" != "slow" ]]; then
+  echo "Error: invalid --stability-profile '${STABILITY_PROFILE}'. Expected default or slow." >&2
   exit 2
 fi
 
@@ -103,7 +111,7 @@ LOG_FILE="${LOG_DIR}/run_${DATE}.log"
 exec > >(tee -a "${LOG_FILE}") 2>&1
 
 log "Starting daily pipeline date=${DATE}"
-log "Directories raw=${RAW_DIR} normalized=${NORMALIZED_DIR} reports=${REPORTS_DIR} logs=${LOG_DIR} fetch_mode=${FETCH_MODE}"
+log "Directories raw=${RAW_DIR} normalized=${NORMALIZED_DIR} reports=${REPORTS_DIR} logs=${LOG_DIR} fetch_mode=${FETCH_MODE} stability_profile=${STABILITY_PROFILE}"
 
 RAW_PATH=""
 NORMALIZED_PATH="${NORMALIZED_INPUT}"
@@ -148,7 +156,7 @@ PY
   CHALLENGE_BLOCKED_COUNT=0
 
   for SOURCE_ITEM in "${SOURCE_ITEMS[@]}"; do
-    INGEST_RESULT="$(python3 - "${SOURCE_ITEM}" "${RAW_DIR}" "${DATE}" "${FETCH_MODE}" <<'PY'
+    INGEST_RESULT="$(python3 - "${SOURCE_ITEM}" "${RAW_DIR}" "${DATE}" "${FETCH_MODE}" "${STABILITY_PROFILE}" <<'PY'
 from datetime import datetime, timezone
 from pathlib import Path
 import shutil
@@ -162,6 +170,7 @@ source = sys.argv[1]
 raw_dir = Path(sys.argv[2])
 run_date = datetime.strptime(sys.argv[3], "%Y-%m-%d").replace(tzinfo=timezone.utc)
 fetch_mode = sys.argv[4]
+stability_profile = sys.argv[5]
 
 source_type, normalized_source = ingest.resolve_source(source)
 output_path = ingest.create_output_path(raw_dir, normalized_source, timestamp=run_date)
@@ -170,18 +179,28 @@ backend = "local-file"
 attempts = 1
 outcome = "ok"
 detail = ""
+diag_stability_profile = stability_profile
+diag_challenge = ""
+diag_challenge_retry_attempted = False
 
 try:
     if source_type == "url":
         src_suffix = Path(urlparse(normalized_source).path).suffix.lower()
         if src_suffix in {".csv", ".json", ".html", ".htm"}:
             output_path = output_path.with_suffix(src_suffix)
-        fetch_result = safe_requests.fetch_with_policy(normalized_source, fetch_mode=fetch_mode)
+        fetch_result = safe_requests.fetch_with_policy(
+            normalized_source,
+            fetch_mode=fetch_mode,
+            stability_profile=stability_profile,
+        )
         body = fetch_result.text
         backend = fetch_result.diagnostics.backend
         attempts = fetch_result.diagnostics.attempts
         outcome = fetch_result.diagnostics.outcome
         detail = fetch_result.diagnostics.detail
+        diag_stability_profile = fetch_result.diagnostics.stability_profile
+        diag_challenge = fetch_result.diagnostics.challenge_detected
+        diag_challenge_retry_attempted = fetch_result.diagnostics.challenge_retry_attempted
         output_path.write_text(body, encoding="utf-8")
     else:
         src_path = Path(normalized_source)
@@ -226,6 +245,9 @@ print(
             f"ATTEMPTS={attempts}",
             f"OUTCOME={outcome}",
             f"DETAIL={detail}",
+            f"STABILITY_PROFILE={diag_stability_profile}",
+            f"CHALLENGE={diag_challenge}",
+            f"CHALLENGE_RETRY_ATTEMPTED={diag_challenge_retry_attempted}",
         ]
     )
 )
@@ -237,11 +259,14 @@ PY
     ATTEMPTS="$(printf '%s\n' "${INGEST_RESULT}" | awk -F= '/^ATTEMPTS=/{print $2; exit}')"
     OUTCOME="$(printf '%s\n' "${INGEST_RESULT}" | awk -F= '/^OUTCOME=/{print $2; exit}')"
     DETAIL="$(printf '%s\n' "${INGEST_RESULT}" | awk -F= '/^DETAIL=/{print substr($0,8); exit}')"
+    DIAG_STABILITY_PROFILE="$(printf '%s\n' "${INGEST_RESULT}" | awk -F= '/^STABILITY_PROFILE=/{print $2; exit}')"
+    DIAG_CHALLENGE="$(printf '%s\n' "${INGEST_RESULT}" | awk -F= '/^CHALLENGE=/{print $2; exit}')"
+    DIAG_CHALLENGE_RETRY="$(printf '%s\n' "${INGEST_RESULT}" | awk -F= '/^CHALLENGE_RETRY_ATTEMPTED=/{print $2; exit}')"
 
     if [[ "${STATUS}" == "ok" ]]; then
       RAW_PATH="$(printf '%s\n' "${INGEST_RESULT}" | awk -F= '/^RAW_PATH=/{print $2; exit}')"
       RAW_PATHS+=("${RAW_PATH}")
-      log "[stage:ingest] complete source=${SOURCE_ITEM} raw_path=${RAW_PATH} backend_used=${BACKEND_USED} attempts=${ATTEMPTS} outcome=${OUTCOME}"
+      log "[stage:ingest] complete source=${SOURCE_ITEM} raw_path=${RAW_PATH} backend_used=${BACKEND_USED} attempts=${ATTEMPTS} outcome=${OUTCOME} stability_profile=${DIAG_STABILITY_PROFILE} challenge=${DIAG_CHALLENGE} challenge_retry_attempted=${DIAG_CHALLENGE_RETRY}"
 
       NORMALIZE_RESULT="$(python3 - "${RAW_PATH}" "${NORMALIZED_DIR}" "${DATE}" "${SOURCE_ITEM}" <<'PY'
 from datetime import datetime, timezone
