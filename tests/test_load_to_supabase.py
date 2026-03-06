@@ -79,3 +79,30 @@ def test_upsert_mapping_uses_expected_endpoint_and_conflict_keys(tmp_path):
     assert captured[1]["url"].endswith("/rest/v1/raw_listings?on_conflict=snapshot_date%2Csource%2Clisting_key")
     assert captured[2]["url"].endswith("/rest/v1/daily_market_summary?on_conflict=snapshot_date%2Csource%2Cmetric")
     assert all(call["headers"]["apikey"] == "test-key" for call in captured)
+
+
+def test_run_load_skips_html_raw_payloads(tmp_path):
+    normalized = tmp_path / "normalized.json"
+    normalized.write_text(json.dumps([{"id": "x1", "rent": 1800}]), encoding="utf-8")
+
+    raw = tmp_path / "raw.json"
+    raw.write_text("<html><body>blocked page</body></html>", encoding="utf-8")
+
+    captured = []
+
+    def fake_request(**kwargs):
+        captured.append(kwargs)
+
+    load_to_supabase.run_load(
+        normalized_input=Path(normalized),
+        raw_input=Path(raw),
+        snapshot_date="2025-03-05",
+        source="daily",
+        env={"SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key"},
+        request_fn=fake_request,
+    )
+
+    assert len(captured) == 1
+    assert captured[0]["url"].endswith(
+        "/rest/v1/clean_listings_snapshot?on_conflict=snapshot_date%2Csource%2Clisting_key"
+    )

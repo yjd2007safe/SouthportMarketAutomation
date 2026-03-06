@@ -88,6 +88,16 @@ Fallback behavior:
 - File/JSON/CSV source modes are preserved and passed through unchanged.
 - Unsupported or non-matching HTML pages normalize to an empty JSON list (`[]`) rather than raw HTML.
 
+
+
+### Reliability updates for production extraction
+
+- Network fetching now applies retry + exponential backoff + jitter for transient failures, including HTTP 429 pressure from `realestate.com.au`.
+- Persistent HTTP 429 responses are treated as blocked-source events, allowing source-list daily runs to continue with remaining sources.
+- `run_daily.sh` now prints a per-source completion summary (`ok`, `blocked`, `failed`) and proceeds when at least one source succeeds.
+- Onthehouse extraction now supports both JSON-LD and modern `__NEXT_DATA__`-style payloads.
+- Supabase raw-load safely skips malformed/raw HTML payload files to avoid JSON decode crashes.
+
 ### 4) Run analysis module
 
 Once you have normalized records (JSON or CSV), run analysis to generate

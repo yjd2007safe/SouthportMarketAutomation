@@ -19,6 +19,16 @@ _SCRIPT_LD_JSON_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+_NEXT_DATA_RE = re.compile(
+    r"<script[^>]*id=[\"']__NEXT_DATA__[\"'][^>]*>(.*?)</script>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_JSON_ASSIGNMENT_RE = re.compile(
+    r"(?:window\.__INITIAL_STATE__|window\.__NEXT_DATA__)\s*=\s*(\{.*?\})\s*;",
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 def _clean_text(value: Optional[str]) -> str:
     if value is None:
@@ -86,6 +96,20 @@ class OnthehouseAdapter(SiteAdapter):
                 continue
             records.extend(self._records_from_ld_json(url, data))
 
+        for payload in _NEXT_DATA_RE.findall(html):
+            try:
+                data = json.loads(_clean_text(payload))
+            except json.JSONDecodeError:
+                continue
+            records.extend(self._records_from_next_data(url, data))
+
+        for payload in _JSON_ASSIGNMENT_RE.findall(html):
+            try:
+                data = json.loads(_clean_text(payload))
+            except json.JSONDecodeError:
+                continue
+            records.extend(self._records_from_next_data(url, data))
+
         if records:
             return _dedupe_by_id(records)
 
@@ -102,7 +126,7 @@ class OnthehouseAdapter(SiteAdapter):
             baths_match = re.search(r"(\d+)\s*bath", body, re.IGNORECASE)
             price = _to_int(price_match.group(0)) if price_match else None
             bedrooms = _to_int(beds_match.group(1)) if beds_match else None
-            bathrooms = _to_int(baths_match.group(1)) if baths_match else None
+            bathrooms = _to_number(baths_match.group(1)) if baths_match else None
             snippet = body[:240]
             records.append(
                 {
@@ -137,36 +161,78 @@ class OnthehouseAdapter(SiteAdapter):
             type_name = str(obj.get("@type", "")).lower()
             if "realestatelisting" not in type_name and "residence" not in type_name:
                 continue
+            records.append(self._record_from_obj(source_url, obj))
+        return [row for row in records if row]
 
-            listing_url = obj.get("url") or source_url
-            listing_url = urljoin(source_url, str(listing_url))
-            address = _address_to_text(obj.get("address"))
-            offers = obj.get("offers") if isinstance(obj.get("offers"), dict) else {}
-            price = _to_int(offers.get("price") or obj.get("price"))
-            bedrooms = _to_int(obj.get("numberOfBedrooms") or obj.get("bedrooms"))
-            bathrooms = _to_number(obj.get("numberOfBathroomsTotal") or obj.get("bathrooms"))
-            size = _to_number((obj.get("floorSize") or {}).get("value") if isinstance(obj.get("floorSize"), dict) else obj.get("floorSize"))
-            listed_date = obj.get("datePosted")
+    def _records_from_next_data(self, source_url: str, payload: Any) -> List[Record]:
+        records: List[Record] = []
 
-            snippet_parts = [obj.get("name"), address, offers.get("priceCurrency"), offers.get("price")]
-            snippet = _clean_text(" ".join(str(part) for part in snippet_parts if part not in (None, "")))[:240]
+        def walk(value: Any) -> None:
+            if isinstance(value, dict):
+                looks_like_listing = any(
+                    key in value
+                    for key in ("listingUrl", "propertyUrl", "address", "price", "bedrooms", "bathrooms")
+                )
+                if looks_like_listing and any(k in value for k in ("listingUrl", "propertyUrl", "url")):
+                    record = self._record_from_obj(source_url, value)
+                    if record:
+                        records.append(record)
+                for nested in value.values():
+                    walk(nested)
+            elif isinstance(value, list):
+                for item in value:
+                    walk(item)
 
-            records.append(
-                {
-                    "listing_id": _stable_listing_id(self.site_name, listing_url, address, price, bedrooms),
-                    "url": listing_url,
-                    "address": address or None,
-                    "rent": price,
-                    "price": price,
-                    "bedrooms": bedrooms,
-                    "bathrooms": bathrooms,
-                    "size_sqft": size,
-                    "listed_date": listed_date,
-                    "source_site": self.site_name,
-                    "raw_snippet": snippet,
-                }
-            )
+        walk(payload)
         return records
+
+    def _record_from_obj(self, source_url: str, obj: Dict[str, Any]) -> Record:
+        listing_url = obj.get("url") or obj.get("listingUrl") or obj.get("propertyUrl") or source_url
+        listing_url = urljoin(source_url, str(listing_url))
+
+        address = _address_to_text(obj.get("address") or obj.get("displayAddress") or obj.get("fullAddress"))
+        offers = obj.get("offers") if isinstance(obj.get("offers"), dict) else {}
+
+        price = _to_int(
+            offers.get("price")
+            or obj.get("price")
+            or obj.get("displayPrice")
+            or obj.get("rent")
+            or obj.get("weeklyRent")
+        )
+        bedrooms = _to_int(obj.get("numberOfBedrooms") or obj.get("bedrooms") or obj.get("beds"))
+        bathrooms = _to_number(obj.get("numberOfBathroomsTotal") or obj.get("bathrooms") or obj.get("baths"))
+
+        floor_size = obj.get("floorSize")
+        if isinstance(floor_size, dict):
+            size = _to_number(floor_size.get("value"))
+        else:
+            size = _to_number(obj.get("size_sqft") or obj.get("landSize") or floor_size)
+
+        listed_date = obj.get("datePosted") or obj.get("listedDate") or obj.get("dateListed")
+
+        snippet_parts = [
+            obj.get("name"),
+            address,
+            offers.get("priceCurrency"),
+            offers.get("price"),
+            obj.get("displayPrice"),
+        ]
+        snippet = _clean_text(" ".join(str(part) for part in snippet_parts if part not in (None, "")))[:240]
+
+        return {
+            "listing_id": _stable_listing_id(self.site_name, listing_url, address, price, bedrooms),
+            "url": listing_url,
+            "address": address or None,
+            "rent": price,
+            "price": price,
+            "bedrooms": bedrooms,
+            "bathrooms": bathrooms,
+            "size_sqft": size,
+            "listed_date": listed_date,
+            "source_site": self.site_name,
+            "raw_snippet": snippet,
+        }
 
 
 class RealestateAdapter(SiteAdapter):
@@ -196,10 +262,10 @@ def _address_to_text(address: Any) -> str:
         return _clean_text(address)
     if isinstance(address, dict):
         fields = [
-            address.get("streetAddress"),
-            address.get("addressLocality"),
-            address.get("addressRegion"),
-            address.get("postalCode"),
+            address.get("streetAddress") or address.get("line1"),
+            address.get("addressLocality") or address.get("suburb"),
+            address.get("addressRegion") or address.get("state"),
+            address.get("postalCode") or address.get("postcode"),
         ]
         return _clean_text(", ".join(str(part) for part in fields if part not in (None, "")))
     return ""

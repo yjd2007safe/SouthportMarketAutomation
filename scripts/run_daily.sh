@@ -53,58 +53,19 @@ log() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --source)
-      SOURCE="${2:-}"
-      shift 2
-      ;;
-    --source-list)
-      SOURCE_LIST="${2:-}"
-      shift 2
-      ;;
-    --normalized-input)
-      NORMALIZED_INPUT="${2:-}"
-      shift 2
-      ;;
-    --date)
-      DATE="${2:-}"
-      shift 2
-      ;;
-    --raw-dir)
-      RAW_DIR="${2:-}"
-      shift 2
-      ;;
-    --normalized-dir)
-      NORMALIZED_DIR="${2:-}"
-      shift 2
-      ;;
-    --reports-dir)
-      REPORTS_DIR="${2:-}"
-      shift 2
-      ;;
-    --log-dir)
-      LOG_DIR="${2:-}"
-      shift 2
-      ;;
-    --analysis-prefix)
-      ANALYSIS_PREFIX="${2:-}"
-      shift 2
-      ;;
-    --report-prefix)
-      REPORT_PREFIX="${2:-}"
-      shift 2
-      ;;
-    --with-supabase)
-      WITH_SUPABASE=1
-      shift
-      ;;
-    --supabase-source)
-      SUPABASE_SOURCE="${2:-}"
-      shift 2
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
+    --source) SOURCE="${2:-}"; shift 2 ;;
+    --source-list) SOURCE_LIST="${2:-}"; shift 2 ;;
+    --normalized-input) NORMALIZED_INPUT="${2:-}"; shift 2 ;;
+    --date) DATE="${2:-}"; shift 2 ;;
+    --raw-dir) RAW_DIR="${2:-}"; shift 2 ;;
+    --normalized-dir) NORMALIZED_DIR="${2:-}"; shift 2 ;;
+    --reports-dir) REPORTS_DIR="${2:-}"; shift 2 ;;
+    --log-dir) LOG_DIR="${2:-}"; shift 2 ;;
+    --analysis-prefix) ANALYSIS_PREFIX="${2:-}"; shift 2 ;;
+    --report-prefix) REPORT_PREFIX="${2:-}"; shift 2 ;;
+    --with-supabase) WITH_SUPABASE=1; shift ;;
+    --supabase-source) SUPABASE_SOURCE="${2:-}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
     *)
       echo "Unknown argument: $1" >&2
       usage >&2
@@ -171,9 +132,13 @@ PY
 
   NORMALIZED_PATHS=()
   RAW_PATHS=()
+  SUMMARY_LINES=()
+  SUCCESS_COUNT=0
+  BLOCKED_COUNT=0
+  FAILED_COUNT=0
 
   for SOURCE_ITEM in "${SOURCE_ITEMS[@]}"; do
-    RAW_PATH="$(python3 - "${SOURCE_ITEM}" "${RAW_DIR}" "${DATE}" <<'PY'
+    INGEST_RESULT="$(python3 - "${SOURCE_ITEM}" "${RAW_DIR}" "${DATE}" <<'PY'
 from datetime import datetime, timezone
 from pathlib import Path
 import shutil
@@ -190,27 +155,38 @@ run_date = datetime.strptime(sys.argv[3], "%Y-%m-%d").replace(tzinfo=timezone.ut
 source_type, normalized_source = ingest.resolve_source(source)
 output_path = ingest.create_output_path(raw_dir, normalized_source, timestamp=run_date)
 
-if source_type == "url":
-    src_suffix = Path(urlparse(normalized_source).path).suffix.lower()
-    if src_suffix in {".csv", ".json"}:
-        output_path = output_path.with_suffix(src_suffix)
-    body = safe_requests.fetch_text(normalized_source)
-    output_path.write_text(body, encoding="utf-8")
-else:
-    src_path = Path(normalized_source)
-    if not src_path.exists():
-        raise FileNotFoundError(f"Source file not found: {src_path}")
-    if src_path.suffix.lower() in {".csv", ".json"}:
-        output_path = output_path.with_suffix(src_path.suffix.lower())
-    shutil.copy2(src_path, output_path)
+try:
+    if source_type == "url":
+        src_suffix = Path(urlparse(normalized_source).path).suffix.lower()
+        if src_suffix in {".csv", ".json", ".html", ".htm"}:
+            output_path = output_path.with_suffix(src_suffix)
+        body = safe_requests.fetch_text(normalized_source)
+        output_path.write_text(body, encoding="utf-8")
+    else:
+        src_path = Path(normalized_source)
+        if not src_path.exists():
+            raise FileNotFoundError(f"Source file not found: {src_path}")
+        if src_path.suffix.lower() in {".csv", ".json", ".html", ".htm"}:
+            output_path = output_path.with_suffix(src_path.suffix.lower())
+        shutil.copy2(src_path, output_path)
+except safe_requests.BlockedSourceError as exc:
+    print(f"STATUS=blocked\nDETAIL={exc}")
+    raise SystemExit(0)
+except Exception as exc:
+    print(f"STATUS=failed\nDETAIL={exc}")
+    raise SystemExit(0)
 
-print(output_path)
+print(f"STATUS=ok\nRAW_PATH={output_path}")
 PY
 )"
-    RAW_PATHS+=("${RAW_PATH}")
-    log "[stage:ingest] complete source=${SOURCE_ITEM} raw_path=${RAW_PATH}"
 
-    NORMALIZED_PATH="$(python3 - "${RAW_PATH}" "${NORMALIZED_DIR}" "${DATE}" "${SOURCE_ITEM}" <<'PY'
+    STATUS="$(printf '%s\n' "${INGEST_RESULT}" | awk -F= '/^STATUS=/{print $2; exit}')"
+    if [[ "${STATUS}" == "ok" ]]; then
+      RAW_PATH="$(printf '%s\n' "${INGEST_RESULT}" | awk -F= '/^RAW_PATH=/{print $2; exit}')"
+      RAW_PATHS+=("${RAW_PATH}")
+      log "[stage:ingest] complete source=${SOURCE_ITEM} raw_path=${RAW_PATH}"
+
+      NORMALIZED_PATH="$(python3 - "${RAW_PATH}" "${NORMALIZED_DIR}" "${DATE}" "${SOURCE_ITEM}" <<'PY'
 from datetime import datetime, timezone
 from pathlib import Path
 import shutil
@@ -242,9 +218,38 @@ else:
 print(out_path)
 PY
 )"
-    NORMALIZED_PATHS+=("${NORMALIZED_PATH}")
-    log "[stage:normalize] complete source=${SOURCE_ITEM} normalized_path=${NORMALIZED_PATH}"
+      NORMALIZED_PATHS+=("${NORMALIZED_PATH}")
+      SUMMARY_LINES+=("ok|${SOURCE_ITEM}|${RAW_PATH}|${NORMALIZED_PATH}")
+      SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+      log "[stage:normalize] complete source=${SOURCE_ITEM} normalized_path=${NORMALIZED_PATH}"
+    elif [[ "${STATUS}" == "blocked" ]]; then
+      DETAIL="$(printf '%s\n' "${INGEST_RESULT}" | awk -F= '/^DETAIL=/{print substr($0,8); exit}')"
+      SUMMARY_LINES+=("blocked|${SOURCE_ITEM}|${DETAIL}")
+      BLOCKED_COUNT=$((BLOCKED_COUNT + 1))
+      log "[stage:ingest] blocked source=${SOURCE_ITEM} detail=${DETAIL}"
+    else
+      DETAIL="$(printf '%s\n' "${INGEST_RESULT}" | awk -F= '/^DETAIL=/{print substr($0,8); exit}')"
+      SUMMARY_LINES+=("failed|${SOURCE_ITEM}|${DETAIL}")
+      FAILED_COUNT=$((FAILED_COUNT + 1))
+      log "[stage:ingest] failed source=${SOURCE_ITEM} detail=${DETAIL}"
+    fi
   done
+
+  log "[stage:source-summary] begin"
+  for summary in "${SUMMARY_LINES[@]}"; do
+    IFS='|' read -r state src a b <<<"${summary}"
+    if [[ "${state}" == "ok" ]]; then
+      log "[stage:source-summary] status=ok source=${src} raw_path=${a} normalized_path=${b}"
+    else
+      log "[stage:source-summary] status=${state} source=${src} detail=${a}"
+    fi
+  done
+  log "[stage:source-summary] totals success=${SUCCESS_COUNT} blocked=${BLOCKED_COUNT} failed=${FAILED_COUNT}"
+
+  if [[ "${#NORMALIZED_PATHS[@]}" -eq 0 ]]; then
+    echo "Error: all sources blocked or failed; no normalized outputs available." >&2
+    exit 1
+  fi
 
   if [[ "${#NORMALIZED_PATHS[@]}" -gt 1 ]]; then
     COMBINED_PATH="${NORMALIZED_DIR}/normalized_${DATE}_combined.json"

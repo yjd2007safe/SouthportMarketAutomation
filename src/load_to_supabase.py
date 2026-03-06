@@ -6,6 +6,7 @@ import argparse
 import csv
 import hashlib
 import json
+import re
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,10 +43,17 @@ def _parse_date(value: str) -> str:
     return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
 
 
+def _looks_like_html(raw: str) -> bool:
+    return bool(re.search(r"<\s*(?:!doctype|html|head|body|script)\b", raw, flags=re.IGNORECASE))
+
+
 def _read_rows(path: Path) -> List[JsonDict]:
     suffix = path.suffix.lower()
     if suffix == ".json":
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        raw = path.read_text(encoding="utf-8")
+        if _looks_like_html(raw):
+            return []
+        payload = json.loads(raw)
         if isinstance(payload, list):
             return [row for row in payload if isinstance(row, dict)]
         if isinstance(payload, dict):
@@ -187,7 +195,10 @@ def run_load(
     )
 
     if raw_input is not None and raw_input.exists():
-        raw_rows = prepare_raw_rows(_read_rows(raw_input), snapshot_date, source)
+        try:
+            raw_rows = prepare_raw_rows(_read_rows(raw_input), snapshot_date, source)
+        except (ValueError, json.JSONDecodeError):
+            raw_rows = []
         upsert_rows(
             supabase_url=supabase_url,
             supabase_key=supabase_key,
