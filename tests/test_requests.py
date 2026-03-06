@@ -19,6 +19,21 @@ def test_choose_backend_prefers_browser_domain():
     assert requests.choose_backend("https://www.realestate.com.au/rent", config) == "browser"
 
 
+def test_choose_backend_prefers_relay_in_relay_mode_for_supported_domains():
+    config = requests.FetchConfig(
+        browser_domains=("realestate.com.au",),
+        relay_domains=("realestate.com.au", "domain.com.au"),
+    )
+    assert (
+        requests.choose_backend(
+            "https://www.realestate.com.au/rent",
+            config,
+            fetch_mode="relay",
+        )
+        == "relay"
+    )
+
+
 def test_choose_backend_uses_explicit_mapping():
     config = requests.FetchConfig(domain_backends={"foo.com": "proxy-http"})
     assert requests.choose_backend("https://sub.foo.com/listings", config) == "proxy-http"
@@ -46,6 +61,45 @@ def test_fetch_with_policy_falls_back_from_browser_to_http():
 
     assert result.text == "ok"
     assert result.diagnostics.backend == "http"
+
+
+def test_fetch_with_policy_falls_back_from_relay_to_browser_to_http():
+    config = requests.FetchConfig(
+        relay_domains=("realestate.com.au",),
+        browser_domains=("realestate.com.au",),
+        proxy_endpoints=(),
+    )
+
+    calls = []
+
+    def broken_relay(url, timeout, cfg):
+        calls.append("relay")
+        raise RuntimeError("relay unavailable")
+
+    def broken_browser(url, timeout):
+        calls.append("browser")
+        raise RuntimeError("browser unavailable")
+
+    def ok_http(url, **kwargs):
+        calls.append("http")
+        return requests.FetchResult(
+            text="ok",
+            diagnostics=requests.FetchDiagnostics(backend="http", attempts=2, outcome="ok"),
+        )
+
+    result = requests.fetch_with_policy(
+        "https://www.realestate.com.au/rent",
+        config=config,
+        fetch_mode="relay",
+        relay_fetcher=broken_relay,
+        browser_fetcher=broken_browser,
+        http_fetcher=ok_http,
+        proxy_http_fetcher=lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("no proxy")),
+    )
+
+    assert result.text == "ok"
+    assert result.diagnostics.backend == "http"
+    assert calls == ["relay", "browser", "http"]
 
 
 def test_fetch_text_happy_path_with_mock_opener():
