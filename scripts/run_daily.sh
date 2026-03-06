@@ -8,6 +8,7 @@ export PYTHONPATH="${ROOT_DIR}/src:${PYTHONPATH:-}"
 DEFAULT_DATE="$(date -u +%F)"
 DATE="${DEFAULT_DATE}"
 SOURCE=""
+SOURCE_LIST=""
 NORMALIZED_INPUT=""
 RAW_DIR="data/raw"
 NORMALIZED_DIR="data/normalized"
@@ -27,6 +28,7 @@ Run the full Southport daily pipeline:
 
 Options:
   --source PATH_OR_URL       Raw source path or http(s) URL for ingest stage.
+  --source-list PATH         JSON/YAML/TXT source list; iterate ingest over ingestable entries.
   --normalized-input PATH    Skip ingest/normalize and use this normalized CSV/JSON.
   --date YYYY-MM-DD          Run date used in output naming (default: current UTC date).
   --raw-dir DIR              Directory for ingested raw snapshots (default: data/raw).
@@ -40,7 +42,7 @@ Options:
   -h, --help                 Show this help text.
 
 Notes:
-  * Provide either --source or --normalized-input.
+  * Provide --source, --source-list, or --normalized-input.
   * The script exits non-zero if any stage fails.
 USAGE
 }
@@ -53,6 +55,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --source)
       SOURCE="${2:-}"
+      shift 2
+      ;;
+    --source-list)
+      SOURCE_LIST="${2:-}"
       shift 2
       ;;
     --normalized-input)
@@ -107,9 +113,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "${SOURCE}" && -z "${NORMALIZED_INPUT}" ]]; then
-  echo "Error: provide --source or --normalized-input." >&2
+if [[ -z "${SOURCE}" && -z "${SOURCE_LIST}" && -z "${NORMALIZED_INPUT}" ]]; then
+  echo "Error: provide --source, --source-list, or --normalized-input." >&2
   usage >&2
+  exit 2
+fi
+
+if [[ -n "${SOURCE}" && -n "${SOURCE_LIST}" ]]; then
+  echo "Error: provide only one of --source or --source-list." >&2
   exit 2
 fi
 
@@ -130,7 +141,39 @@ NORMALIZED_PATH="${NORMALIZED_INPUT}"
 
 if [[ -z "${NORMALIZED_INPUT}" ]]; then
   log "[stage:ingest] begin"
-  RAW_PATH="$(python3 - "${SOURCE}" "${RAW_DIR}" "${DATE}" <<'PY'
+  SOURCE_ITEMS=()
+
+  if [[ -n "${SOURCE_LIST}" ]]; then
+    if [[ ! -f "${SOURCE_LIST}" ]]; then
+      echo "Error: source list file not found: ${SOURCE_LIST}" >&2
+      exit 1
+    fi
+
+    mapfile -t SOURCE_ITEMS < <(python3 - "${SOURCE_LIST}" <<'PY'
+from pathlib import Path
+import sys
+
+import discover_sources
+
+items = discover_sources.load_sources_file(Path(sys.argv[1]))
+for source in discover_sources.filter_ingestable_sources(items):
+    print(source["url"])
+PY
+)
+
+    if [[ "${#SOURCE_ITEMS[@]}" -eq 0 ]]; then
+      echo "Error: no ingestable sources found in ${SOURCE_LIST}" >&2
+      exit 1
+    fi
+  else
+    SOURCE_ITEMS=("${SOURCE}")
+  fi
+
+  NORMALIZED_PATHS=()
+  RAW_PATHS=()
+
+  for SOURCE_ITEM in "${SOURCE_ITEMS[@]}"; do
+    RAW_PATH="$(python3 - "${SOURCE_ITEM}" "${RAW_DIR}" "${DATE}" <<'PY'
 from datetime import datetime, timezone
 from pathlib import Path
 import shutil
@@ -138,6 +181,7 @@ import sys
 
 import ingest
 import requests as safe_requests
+from urllib.parse import urlparse
 
 source = sys.argv[1]
 raw_dir = Path(sys.argv[2])
@@ -147,6 +191,9 @@ source_type, normalized_source = ingest.resolve_source(source)
 output_path = ingest.create_output_path(raw_dir, normalized_source, timestamp=run_date)
 
 if source_type == "url":
+    src_suffix = Path(urlparse(normalized_source).path).suffix.lower()
+    if src_suffix in {".csv", ".json"}:
+        output_path = output_path.with_suffix(src_suffix)
     body = safe_requests.fetch_text(normalized_source)
     output_path.write_text(body, encoding="utf-8")
 else:
@@ -160,10 +207,10 @@ else:
 print(output_path)
 PY
 )"
-  log "[stage:ingest] complete raw_path=${RAW_PATH}"
+    RAW_PATHS+=("${RAW_PATH}")
+    log "[stage:ingest] complete source=${SOURCE_ITEM} raw_path=${RAW_PATH}"
 
-  log "[stage:normalize] begin"
-  NORMALIZED_PATH="$(python3 - "${RAW_PATH}" "${NORMALIZED_DIR}" "${DATE}" <<'PY'
+    NORMALIZED_PATH="$(python3 - "${RAW_PATH}" "${NORMALIZED_DIR}" "${DATE}" <<'PY'
 from datetime import datetime, timezone
 from pathlib import Path
 import shutil
@@ -175,13 +222,46 @@ run_date = datetime.strptime(sys.argv[3], "%Y-%m-%d").replace(tzinfo=timezone.ut
 
 normalized_dir.mkdir(parents=True, exist_ok=True)
 ext = raw_path.suffix.lower() if raw_path.suffix.lower() in {".json", ".csv"} else ".json"
-out_name = f"normalized_{run_date.strftime('%Y%m%dT%H%M%SZ')}{ext}"
+out_name = f"normalized_{raw_path.stem}_{run_date.strftime('%Y%m%dT%H%M%SZ')}{ext}"
 out_path = normalized_dir / out_name
 shutil.copy2(raw_path, out_path)
 print(out_path)
 PY
 )"
-  log "[stage:normalize] complete normalized_path=${NORMALIZED_PATH}"
+    NORMALIZED_PATHS+=("${NORMALIZED_PATH}")
+    log "[stage:normalize] complete source=${SOURCE_ITEM} normalized_path=${NORMALIZED_PATH}"
+  done
+
+  if [[ "${#NORMALIZED_PATHS[@]}" -gt 1 ]]; then
+    COMBINED_PATH="${NORMALIZED_DIR}/normalized_${DATE}_combined.json"
+    python3 - "${COMBINED_PATH}" "${NORMALIZED_PATHS[@]}" <<'PY'
+from pathlib import Path
+import csv
+import json
+import sys
+
+output = Path(sys.argv[1])
+inputs = [Path(path) for path in sys.argv[2:]]
+rows = []
+
+for path in inputs:
+    if path.suffix.lower() == ".json":
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            rows.extend(data)
+    elif path.suffix.lower() == ".csv":
+        with path.open("r", encoding="utf-8", newline="") as fh:
+            rows.extend(list(csv.DictReader(fh)))
+
+output.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+PY
+    NORMALIZED_PATH="${COMBINED_PATH}"
+    RAW_PATH="${RAW_PATHS[0]}"
+    log "[stage:normalize] combined source list normalized_path=${NORMALIZED_PATH}"
+  else
+    NORMALIZED_PATH="${NORMALIZED_PATHS[0]}"
+    RAW_PATH="${RAW_PATHS[0]}"
+  fi
 else
   log "[stage:normalize] skipped using provided normalized input path=${NORMALIZED_INPUT}"
 fi
