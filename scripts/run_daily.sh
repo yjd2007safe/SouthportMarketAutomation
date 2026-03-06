@@ -137,6 +137,7 @@ PY
   BLOCKED_COUNT=0
   FAILED_COUNT=0
   PARSE_FAILED_COUNT=0
+  CHALLENGE_BLOCKED_COUNT=0
 
   for SOURCE_ITEM in "${SOURCE_ITEMS[@]}"; do
     INGEST_RESULT="$(python3 - "${SOURCE_ITEM}" "${RAW_DIR}" "${DATE}" <<'PY'
@@ -259,27 +260,50 @@ if is_structured:
     shutil.copy2(raw_path, out_path)
     status = "ok"
     parsed_count = -1
+    block_reason = ""
 else:
     html = raw_path.read_text(encoding="utf-8")
-    rows = scrape_listings.parse_listing_page(source_item, html)
+    challenge_provider = scrape_listings.detect_challenge_page(html)
+    if challenge_provider:
+        rows = []
+        status = "blocked"
+        parsed_count = 0
+        block_reason = f"challenge:{challenge_provider}"
+    else:
+        rows = scrape_listings.parse_listing_page(source_item, html)
+        status = "ok" if len(rows) >= 1 else "parse_failed"
+        parsed_count = len(rows)
+        block_reason = ""
     out_path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
-    parsed_count = len(rows)
-    status = "ok" if parsed_count > 0 else "parse_failed"
 
-print("\n".join([f"STATUS={status}", f"NORMALIZED_PATH={out_path}", f"PARSED_COUNT={parsed_count}"]))
+print(
+    "\n".join(
+        [
+            f"STATUS={status}",
+            f"NORMALIZED_PATH={out_path}",
+            f"PARSED_COUNT={parsed_count}",
+            f"BLOCK_REASON={block_reason}",
+        ]
+    )
+)
 PY
 )"
       NORMALIZED_STATUS="$(printf '%s\n' "${NORMALIZE_RESULT}" | awk -F= '/^STATUS=/{print $2; exit}')"
       NORMALIZED_PATH="$(printf '%s\n' "${NORMALIZE_RESULT}" | awk -F= '/^NORMALIZED_PATH=/{print $2; exit}')"
       PARSED_COUNT="$(printf '%s\n' "${NORMALIZE_RESULT}" | awk -F= '/^PARSED_COUNT=/{print $2; exit}')"
+      BLOCK_REASON="$(printf '%s\n' "${NORMALIZE_RESULT}" | awk -F= '/^BLOCK_REASON=/{print substr($0,14); exit}')"
 
       if [[ "${NORMALIZED_STATUS}" == "ok" ]]; then
         NORMALIZED_PATHS+=("${NORMALIZED_PATH}")
         SUMMARY_LINES+=("ok|${SOURCE_ITEM}|${RAW_PATH}|${NORMALIZED_PATH}|${BACKEND}|${ATTEMPTS}|${OUTCOME}|${DETAIL}|${PARSED_COUNT}")
         SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
         log "[stage:normalize] complete source=${SOURCE_ITEM} normalized_path=${NORMALIZED_PATH} parsed_count=${PARSED_COUNT}"
+      elif [[ "${NORMALIZED_STATUS}" == "blocked" ]]; then
+        SUMMARY_LINES+=("blocked|${SOURCE_ITEM}|${BLOCK_REASON}|${BACKEND}|${ATTEMPTS}|${OUTCOME}")
+        CHALLENGE_BLOCKED_COUNT=$((CHALLENGE_BLOCKED_COUNT + 1))
+        log "[stage:normalize] blocked source=${SOURCE_ITEM} normalized_path=${NORMALIZED_PATH} parsed_count=${PARSED_COUNT} reason=${BLOCK_REASON}"
       else
-        SUMMARY_LINES+=("parse_failed|${SOURCE_ITEM}|parsed_records=0|${BACKEND}|${ATTEMPTS}|${OUTCOME}")
+        SUMMARY_LINES+=("parse_failed|${SOURCE_ITEM}|parsed_records=${PARSED_COUNT}|${BACKEND}|${ATTEMPTS}|${OUTCOME}")
         PARSE_FAILED_COUNT=$((PARSE_FAILED_COUNT + 1))
         log "[stage:normalize] parse_failed source=${SOURCE_ITEM} normalized_path=${NORMALIZED_PATH} parsed_count=${PARSED_COUNT}"
       fi
@@ -303,10 +327,10 @@ PY
       log "[stage:source-summary] status=${state} source=${src} detail=${a} backend=${b} attempts=${c} outcome=${d}"
     fi
   done
-  log "[stage:source-summary] totals success=${SUCCESS_COUNT} blocked=${BLOCKED_COUNT} failed=${FAILED_COUNT} parse_failed=${PARSE_FAILED_COUNT}"
+  log "[stage:source-summary] totals success=${SUCCESS_COUNT} blocked=${BLOCKED_COUNT} challenge_blocked=${CHALLENGE_BLOCKED_COUNT} failed=${FAILED_COUNT} parse_failed=${PARSE_FAILED_COUNT}"
 
   if [[ "${#NORMALIZED_PATHS[@]}" -eq 0 ]]; then
-    echo "Error: all sources blocked or failed; no normalized outputs available." >&2
+    echo "Error: all sources blocked/parse_failed/failed; no normalized outputs available." >&2
     exit 1
   fi
 
