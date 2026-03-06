@@ -29,6 +29,87 @@ _JSON_ASSIGNMENT_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+_SCRIPT_TAG_RE = re.compile(r"<script[^>]*>(.*?)</script>", re.IGNORECASE | re.DOTALL)
+
+
+def _extract_json_object_after_marker(text: str, marker: str) -> List[Any]:
+    start = 0
+    values: List[Any] = []
+    while True:
+        idx = text.find(marker, start)
+        if idx < 0:
+            break
+        brace_idx = text.find("{", idx + len(marker))
+        if brace_idx < 0:
+            break
+
+        depth = 0
+        in_string = False
+        escaped = False
+        end_idx = -1
+        for pos in range(brace_idx, len(text)):
+            ch = text[pos]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end_idx = pos + 1
+                    break
+
+        if end_idx > 0:
+            try:
+                values.append(json.loads(text[brace_idx:end_idx]))
+            except json.JSONDecodeError:
+                pass
+            start = end_idx
+        else:
+            break
+
+    return values
+
+
+def _extract_json_states(html: str) -> List[Any]:
+    payloads: List[Any] = []
+
+    for block in _NEXT_DATA_RE.findall(html):
+        try:
+            payloads.append(json.loads(_clean_text(block)))
+        except json.JSONDecodeError:
+            continue
+
+    for block in _JSON_ASSIGNMENT_RE.findall(html):
+        try:
+            payloads.append(json.loads(_clean_text(block)))
+        except json.JSONDecodeError:
+            continue
+
+    for marker in (
+        "window.__INITIAL_STATE__ =",
+        "window.__NEXT_DATA__ =",
+        "window.__NUXT__ =",
+        "window.__APOLLO_STATE__ =",
+    ):
+        payloads.extend(_extract_json_object_after_marker(html, marker))
+
+    for script_body in _SCRIPT_TAG_RE.findall(html):
+        if "window.__INITIAL_STATE__" not in script_body and "window.__NUXT__" not in script_body:
+            continue
+        payloads.extend(_extract_json_object_after_marker(script_body, "="))
+
+    return payloads
+
 
 def _clean_text(value: Optional[str]) -> str:
     if value is None:
@@ -96,18 +177,7 @@ class OnthehouseAdapter(SiteAdapter):
                 continue
             records.extend(self._records_from_ld_json(url, data))
 
-        for payload in _NEXT_DATA_RE.findall(html):
-            try:
-                data = json.loads(_clean_text(payload))
-            except json.JSONDecodeError:
-                continue
-            records.extend(self._records_from_next_data(url, data))
-
-        for payload in _JSON_ASSIGNMENT_RE.findall(html):
-            try:
-                data = json.loads(_clean_text(payload))
-            except json.JSONDecodeError:
-                continue
+        for data in _extract_json_states(html):
             records.extend(self._records_from_next_data(url, data))
 
         if records:
@@ -171,7 +241,16 @@ class OnthehouseAdapter(SiteAdapter):
             if isinstance(value, dict):
                 looks_like_listing = any(
                     key in value
-                    for key in ("listingUrl", "propertyUrl", "address", "price", "bedrooms", "bathrooms")
+                    for key in (
+                        "listingUrl",
+                        "propertyUrl",
+                        "address",
+                        "price",
+                        "bedrooms",
+                        "bathrooms",
+                        "weeklyPrice",
+                        "displayAddress",
+                    )
                 )
                 if looks_like_listing and any(k in value for k in ("listingUrl", "propertyUrl", "url")):
                     record = self._record_from_obj(source_url, value)
@@ -187,7 +266,14 @@ class OnthehouseAdapter(SiteAdapter):
         return records
 
     def _record_from_obj(self, source_url: str, obj: Dict[str, Any]) -> Record:
-        listing_url = obj.get("url") or obj.get("listingUrl") or obj.get("propertyUrl") or source_url
+        listing_url = (
+            obj.get("url")
+            or obj.get("listingUrl")
+            or obj.get("propertyUrl")
+            or obj.get("canonicalUrl")
+            or obj.get("href")
+            or source_url
+        )
         listing_url = urljoin(source_url, str(listing_url))
 
         address = _address_to_text(obj.get("address") or obj.get("displayAddress") or obj.get("fullAddress"))
@@ -197,6 +283,7 @@ class OnthehouseAdapter(SiteAdapter):
             offers.get("price")
             or obj.get("price")
             or obj.get("displayPrice")
+            or obj.get("weeklyPrice")
             or obj.get("rent")
             or obj.get("weeklyRent")
         )
@@ -243,7 +330,112 @@ class RealestateAdapter(SiteAdapter):
         return "realestate.com.au" in html.lower()
 
     def parse(self, url: str, html: str) -> List[Record]:
-        return []
+        records: List[Record] = []
+        for payload in _SCRIPT_LD_JSON_RE.findall(html):
+            try:
+                data = json.loads(_clean_text(payload))
+            except json.JSONDecodeError:
+                continue
+            records.extend(self._records_from_state(url, data))
+
+        for data in _extract_json_states(html):
+            records.extend(self._records_from_state(url, data))
+
+        return _dedupe_by_id(records)
+
+    def _records_from_state(self, source_url: str, payload: Any) -> List[Record]:
+        records: List[Record] = []
+
+        def walk(value: Any) -> None:
+            if isinstance(value, dict):
+                listing_url = (
+                    value.get("canonicalUrl")
+                    or value.get("prettyDetailsUrl")
+                    or value.get("detailsUrl")
+                    or value.get("listingUrl")
+                    or value.get("url")
+                )
+                is_candidate = bool(listing_url) and any(
+                    key in value
+                    for key in (
+                        "address",
+                        "displayAddress",
+                        "price",
+                        "priceText",
+                        "beds",
+                        "bedrooms",
+                        "baths",
+                        "bathrooms",
+                    )
+                )
+                if is_candidate:
+                    record = self._record_from_obj(source_url, value)
+                    if record:
+                        records.append(record)
+                for nested in value.values():
+                    walk(nested)
+            elif isinstance(value, list):
+                for item in value:
+                    walk(item)
+
+        walk(payload)
+        return records
+
+    def _record_from_obj(self, source_url: str, obj: Dict[str, Any]) -> Record:
+        listing_url = (
+            obj.get("canonicalUrl")
+            or obj.get("prettyDetailsUrl")
+            or obj.get("detailsUrl")
+            or obj.get("listingUrl")
+            or obj.get("url")
+            or source_url
+        )
+        listing_url = urljoin(source_url, str(listing_url))
+
+        address = _address_to_text(
+            obj.get("address")
+            or obj.get("displayAddress")
+            or obj.get("streetAddress")
+            or obj.get("fullAddress")
+        )
+
+        price = _to_int(
+            obj.get("price")
+            or obj.get("priceText")
+            or obj.get("displayPrice")
+            or obj.get("rentalPrice")
+            or obj.get("weeklyPrice")
+        )
+        bedrooms = _to_int(obj.get("bedrooms") or obj.get("beds"))
+        bathrooms = _to_number(obj.get("bathrooms") or obj.get("baths"))
+        size = _to_number(obj.get("size") or obj.get("size_sqft") or obj.get("landSize"))
+        listed_date = obj.get("dateListed") or obj.get("listingDate")
+
+        snippet = _clean_text(
+            " ".join(
+                str(part)
+                for part in (
+                    obj.get("headline"),
+                    address,
+                    obj.get("priceText") or obj.get("displayPrice"),
+                )
+                if part not in (None, "")
+            )
+        )[:240]
+
+        return {
+            "listing_id": _stable_listing_id(self.site_name, listing_url, address, price, bedrooms),
+            "url": listing_url,
+            "address": address or None,
+            "rent": price,
+            "price": price,
+            "bedrooms": bedrooms,
+            "bathrooms": bathrooms,
+            "size_sqft": size,
+            "listed_date": listed_date,
+            "source_site": self.site_name,
+            "raw_snippet": snippet,
+        }
 
 
 class DomainAdapter(SiteAdapter):
