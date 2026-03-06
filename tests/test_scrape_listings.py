@@ -44,3 +44,16 @@ def test_parse_onthehouse_fallback_card_extracts_partial_record():
 def test_parse_unknown_site_returns_empty_records():
     rows = scrape_listings.parse_listing_page("https://example.com/search", "<html><body>no listings</body></html>")
     assert rows == []
+
+
+def test_parse_onthehouse_next_data_fixture_into_structured_records():
+    html = Path("tests/fixtures_onthehouse_next_data.html").read_text(encoding="utf-8")
+
+    rows = scrape_listings.parse_listing_page("https://www.onthehouse.com.au/rent/southport-qld-4215", html)
+
+    assert len(rows) == 2
+    assert rows[0]["listing_id"].startswith("lst_")
+    assert rows[0]["url"].startswith("https://www.onthehouse.com.au/property/")
+    assert rows[0]["rent"] == 780
+    assert rows[0]["bedrooms"] == 3
+    assert rows[0]["bathrooms"] == 2.0

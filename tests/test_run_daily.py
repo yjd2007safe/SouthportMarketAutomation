@@ -1,3 +1,4 @@
+import functools
 from pathlib import Path
 import subprocess
 
@@ -95,7 +96,6 @@ def test_run_daily_with_supabase_requires_env(tmp_path):
 
 
 def test_run_daily_with_source_list_json(tmp_path):
-    import functools
     import http.server
     import json
     import socketserver
@@ -177,7 +177,6 @@ def test_run_daily_with_source_list_json(tmp_path):
 
 
 def test_run_daily_with_source_list_html_parses_to_structured_json(tmp_path):
-    import functools
     import http.server
     import json
     import socketserver
@@ -249,3 +248,97 @@ def test_run_daily_with_source_list_html_parses_to_structured_json(tmp_path):
     assert payload
     assert payload[0]["listing_id"].startswith("lst_")
     assert payload[0]["source_site"] == "onthehouse"
+
+
+def test_run_daily_source_list_partial_success_with_blocked_source(tmp_path):
+    import http.server
+    import json
+    import socketserver
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/blocked":
+                self.send_response(429)
+                self.end_headers()
+                self.wfile.write(b"rate limited")
+            elif self.path == "/ok.csv":
+                body = (
+                    "rent,snapshot_date,first_seen,last_seen,bedrooms,size_sqft\n"
+                    "2100,2025-03-01,2025-02-15,2025-03-05,2,780\n"
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/csv")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, format, *args):
+            return
+
+    with socketserver.TCPServer(("127.0.0.1", 0), Handler) as httpd:
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        port = httpd.server_address[1]
+
+        source_list = tmp_path / "sources.json"
+        source_list.write_text(
+            json.dumps(
+                [
+                    {
+                        "url": f"http://127.0.0.1:{port}/blocked",
+                        "site": "realestate.com.au",
+                        "category": "search",
+                        "confidence": 0.95,
+                        "notes": "blocked",
+                    },
+                    {
+                        "url": f"http://127.0.0.1:{port}/ok.csv",
+                        "site": "local-http",
+                        "category": "search",
+                        "confidence": 0.92,
+                        "notes": "ok",
+                    },
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        raw_dir = tmp_path / "raw"
+        normalized_dir = tmp_path / "normalized"
+        reports_dir = tmp_path / "reports"
+        log_dir = tmp_path / "logs"
+
+        script = Path(__file__).resolve().parents[1] / "scripts" / "run_daily.sh"
+        result = subprocess.run(
+            [
+                "bash",
+                str(script),
+                "--source-list",
+                str(source_list),
+                "--date",
+                "2025-03-05",
+                "--raw-dir",
+                str(raw_dir),
+                "--normalized-dir",
+                str(normalized_dir),
+                "--reports-dir",
+                str(reports_dir),
+                "--log-dir",
+                str(log_dir),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        httpd.shutdown()
+        thread.join(timeout=2)
+
+    assert result.returncode == 0, result.stderr
+    assert "status=blocked" in result.stdout
+    assert "status=ok" in result.stdout
+    assert (reports_dir / "market_analysis.json").exists()
