@@ -204,3 +204,39 @@ def test_fetch_text_retries_network_error_then_succeeds():
     )
 
     assert body == "ok"
+
+
+def test_get_stability_policy_slow_profile():
+    policy = requests.get_stability_policy("slow")
+
+    assert policy.profile == "slow"
+    assert policy.challenge_retry_once is True
+    assert policy.max_backend_parallelism == 1
+    assert policy.rate_limit_seconds > 0.5
+
+
+def test_fetch_with_policy_sets_stability_profile_and_challenge_diagnostics():
+    config = requests.FetchConfig(browser_domains=("realestate.com.au",), proxy_endpoints=())
+
+    def challenged_browser(url, timeout):
+        raise requests.ChallengeDetectedError("kasada", "browser")
+
+    def ok_http(url, **kwargs):
+        return requests.FetchResult(
+            text="ok",
+            diagnostics=requests.FetchDiagnostics(backend="http", attempts=1, outcome="ok"),
+        )
+
+    result = requests.fetch_with_policy(
+        "https://www.realestate.com.au/rent",
+        config=config,
+        stability_profile="slow",
+        browser_fetcher=challenged_browser,
+        http_fetcher=ok_http,
+        proxy_http_fetcher=lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("no proxy")),
+    )
+
+    assert result.text == "ok"
+    assert result.diagnostics.stability_profile == "slow"
+    assert result.diagnostics.challenge_detected == "kasada"
+    assert result.diagnostics.challenge_retry_attempted is True

@@ -709,3 +709,23 @@ def test_run_daily_source_list_continues_on_parse_failed_when_one_source_succeed
     assert "parse_failed=1" in result.stdout
     assert "status=ok" in result.stdout
     assert (reports_dir / "market_analysis.json").exists()
+
+
+def test_run_daily_rejects_invalid_stability_profile(tmp_path):
+    source = tmp_path / "listings.csv"
+    source.write_text(
+        "rent,snapshot_date,first_seen,last_seen,bedrooms,size_sqft\n"
+        "1500,2025-03-01,2025-02-20,2025-03-05,1,500\n",
+        encoding="utf-8",
+    )
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "run_daily.sh"
+    result = subprocess.run(
+        ["bash", str(script), "--source", str(source), "--stability-profile", "turbo"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "invalid --stability-profile" in result.stderr

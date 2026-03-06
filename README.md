@@ -96,7 +96,7 @@ Fallback behavior:
 - Domain policy defaults to browser-layer rendering for anti-bot-prone domains (for example `realestate.com.au`) with graceful fallback across backends.
 - Proxy transport supports optional rotating endpoints (environment/file configured), conservative rate limiting, and bounded retry attempts.
 - Persistent HTTP 429 responses are treated as blocked-source events, allowing source-list daily runs to continue with remaining sources.
-- `run_daily.sh` now prints per-source diagnostics including `backend_used`, `attempts`, and failure `reason` (for blocked/challenge/parse_failed), in addition to status summary (`ok`, `blocked`, `failed`, `parse_failed`).
+- `run_daily.sh` now prints per-source diagnostics including `backend_used`, `attempts`, `stability_profile`, challenge classification/retry flags, and failure `reason` (for blocked/challenge/parse_failed), in addition to status summary (`ok`, `blocked`, `failed`, `parse_failed`).
 - Onthehouse extraction now supports both JSON-LD and modern `__NEXT_DATA__`-style payloads.
 - Supabase raw-load safely skips malformed/raw HTML payload files to avoid JSON decode crashes.
 
@@ -122,6 +122,14 @@ export SMA_FETCH_PROXY_FILE="config/proxies.txt"
 ```
 
 Safety note: the browser backend only performs normal page rendering/navigation and does **not** implement captcha bypass or evasion hacks.
+
+Slow-stable profile (`--stability-profile slow`) operational guidance:
+
+- Keeps default behavior unchanged unless explicitly enabled.
+- Increases wait windows and adds random jitter to pacing/backoff.
+- Reduces effective backend parallelism intent to 1 for gentler crawling cadence.
+- Browser/relay validation waits for listing-like selectors/content and rejects challenge pages as successful fetches.
+- When challenge markers are detected, diagnostics classify provider (for example `kasada`/`incapsula`/`captcha`) and perform one optional longer cool-down retry before fallback.
 
 ### 4) Run analysis module
 
@@ -191,6 +199,15 @@ Relay-first mode (uses attached Chrome session when supported, then falls back a
 scripts/run_daily.sh \
   --source-list data/sources/southport_sources.json \
   --fetch-mode relay
+```
+
+Slow-stable mode for anti-bot-sensitive sources:
+
+```bash
+scripts/run_daily.sh \
+  --source-list data/sources/southport_sources.json \
+  --fetch-mode relay \
+  --stability-profile slow
 ```
 
 
