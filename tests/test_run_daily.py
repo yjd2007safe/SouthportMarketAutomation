@@ -341,4 +341,7 @@ def test_run_daily_source_list_partial_success_with_blocked_source(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "status=blocked" in result.stdout
     assert "status=ok" in result.stdout
+    assert "backend=http" in result.stdout
+    assert "attempts=" in result.stdout
+    assert "outcome=ok" in result.stdout
     assert (reports_dir / "market_analysis.json").exists()

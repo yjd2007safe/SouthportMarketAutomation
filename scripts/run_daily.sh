@@ -155,12 +155,22 @@ run_date = datetime.strptime(sys.argv[3], "%Y-%m-%d").replace(tzinfo=timezone.ut
 source_type, normalized_source = ingest.resolve_source(source)
 output_path = ingest.create_output_path(raw_dir, normalized_source, timestamp=run_date)
 
+backend = "local-file"
+attempts = 1
+outcome = "ok"
+detail = ""
+
 try:
     if source_type == "url":
         src_suffix = Path(urlparse(normalized_source).path).suffix.lower()
         if src_suffix in {".csv", ".json", ".html", ".htm"}:
             output_path = output_path.with_suffix(src_suffix)
-        body = safe_requests.fetch_text(normalized_source)
+        fetch_result = safe_requests.fetch_with_policy(normalized_source)
+        body = fetch_result.text
+        backend = fetch_result.diagnostics.backend
+        attempts = fetch_result.diagnostics.attempts
+        outcome = fetch_result.diagnostics.outcome
+        detail = fetch_result.diagnostics.detail
         output_path.write_text(body, encoding="utf-8")
     else:
         src_path = Path(normalized_source)
@@ -170,21 +180,57 @@ try:
             output_path = output_path.with_suffix(src_path.suffix.lower())
         shutil.copy2(src_path, output_path)
 except safe_requests.BlockedSourceError as exc:
-    print(f"STATUS=blocked\nDETAIL={exc}")
+    print(
+        "\n".join(
+            [
+                "STATUS=blocked",
+                f"DETAIL={exc}",
+                f"BACKEND={exc.backend}",
+                f"ATTEMPTS={exc.attempts}",
+                "OUTCOME=blocked",
+            ]
+        )
+    )
     raise SystemExit(0)
 except Exception as exc:
-    print(f"STATUS=failed\nDETAIL={exc}")
+    print(
+        "\n".join(
+            [
+                "STATUS=failed",
+                f"DETAIL={exc}",
+                f"BACKEND={backend}",
+                f"ATTEMPTS={attempts}",
+                "OUTCOME=failed",
+            ]
+        )
+    )
     raise SystemExit(0)
 
-print(f"STATUS=ok\nRAW_PATH={output_path}")
+print(
+    "\n".join(
+        [
+            "STATUS=ok",
+            f"RAW_PATH={output_path}",
+            f"BACKEND={backend}",
+            f"ATTEMPTS={attempts}",
+            f"OUTCOME={outcome}",
+            f"DETAIL={detail}",
+        ]
+    )
+)
 PY
 )"
 
     STATUS="$(printf '%s\n' "${INGEST_RESULT}" | awk -F= '/^STATUS=/{print $2; exit}')"
+    BACKEND="$(printf '%s\n' "${INGEST_RESULT}" | awk -F= '/^BACKEND=/{print $2; exit}')"
+    ATTEMPTS="$(printf '%s\n' "${INGEST_RESULT}" | awk -F= '/^ATTEMPTS=/{print $2; exit}')"
+    OUTCOME="$(printf '%s\n' "${INGEST_RESULT}" | awk -F= '/^OUTCOME=/{print $2; exit}')"
+    DETAIL="$(printf '%s\n' "${INGEST_RESULT}" | awk -F= '/^DETAIL=/{print substr($0,8); exit}')"
+
     if [[ "${STATUS}" == "ok" ]]; then
       RAW_PATH="$(printf '%s\n' "${INGEST_RESULT}" | awk -F= '/^RAW_PATH=/{print $2; exit}')"
       RAW_PATHS+=("${RAW_PATH}")
-      log "[stage:ingest] complete source=${SOURCE_ITEM} raw_path=${RAW_PATH}"
+      log "[stage:ingest] complete source=${SOURCE_ITEM} raw_path=${RAW_PATH} backend=${BACKEND} attempts=${ATTEMPTS} outcome=${OUTCOME}"
 
       NORMALIZED_PATH="$(python3 - "${RAW_PATH}" "${NORMALIZED_DIR}" "${DATE}" "${SOURCE_ITEM}" <<'PY'
 from datetime import datetime, timezone
@@ -219,29 +265,27 @@ print(out_path)
 PY
 )"
       NORMALIZED_PATHS+=("${NORMALIZED_PATH}")
-      SUMMARY_LINES+=("ok|${SOURCE_ITEM}|${RAW_PATH}|${NORMALIZED_PATH}")
+      SUMMARY_LINES+=("ok|${SOURCE_ITEM}|${RAW_PATH}|${NORMALIZED_PATH}|${BACKEND}|${ATTEMPTS}|${OUTCOME}|${DETAIL}")
       SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
       log "[stage:normalize] complete source=${SOURCE_ITEM} normalized_path=${NORMALIZED_PATH}"
     elif [[ "${STATUS}" == "blocked" ]]; then
-      DETAIL="$(printf '%s\n' "${INGEST_RESULT}" | awk -F= '/^DETAIL=/{print substr($0,8); exit}')"
-      SUMMARY_LINES+=("blocked|${SOURCE_ITEM}|${DETAIL}")
+      SUMMARY_LINES+=("blocked|${SOURCE_ITEM}|${DETAIL}|${BACKEND}|${ATTEMPTS}|${OUTCOME}")
       BLOCKED_COUNT=$((BLOCKED_COUNT + 1))
-      log "[stage:ingest] blocked source=${SOURCE_ITEM} detail=${DETAIL}"
+      log "[stage:ingest] blocked source=${SOURCE_ITEM} backend=${BACKEND} attempts=${ATTEMPTS} outcome=${OUTCOME} detail=${DETAIL}"
     else
-      DETAIL="$(printf '%s\n' "${INGEST_RESULT}" | awk -F= '/^DETAIL=/{print substr($0,8); exit}')"
-      SUMMARY_LINES+=("failed|${SOURCE_ITEM}|${DETAIL}")
+      SUMMARY_LINES+=("failed|${SOURCE_ITEM}|${DETAIL}|${BACKEND}|${ATTEMPTS}|${OUTCOME}")
       FAILED_COUNT=$((FAILED_COUNT + 1))
-      log "[stage:ingest] failed source=${SOURCE_ITEM} detail=${DETAIL}"
+      log "[stage:ingest] failed source=${SOURCE_ITEM} backend=${BACKEND} attempts=${ATTEMPTS} outcome=${OUTCOME} detail=${DETAIL}"
     fi
   done
 
   log "[stage:source-summary] begin"
   for summary in "${SUMMARY_LINES[@]}"; do
-    IFS='|' read -r state src a b <<<"${summary}"
+    IFS='|' read -r state src a b c d e f <<<"${summary}"
     if [[ "${state}" == "ok" ]]; then
-      log "[stage:source-summary] status=ok source=${src} raw_path=${a} normalized_path=${b}"
+      log "[stage:source-summary] status=ok source=${src} raw_path=${a} normalized_path=${b} backend=${c} attempts=${d} outcome=${e} detail=${f}"
     else
-      log "[stage:source-summary] status=${state} source=${src} detail=${a}"
+      log "[stage:source-summary] status=${state} source=${src} detail=${a} backend=${b} attempts=${c} outcome=${d}"
     fi
   done
   log "[stage:source-summary] totals success=${SUCCESS_COUNT} blocked=${BLOCKED_COUNT} failed=${FAILED_COUNT}"

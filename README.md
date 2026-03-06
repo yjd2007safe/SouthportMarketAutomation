@@ -92,11 +92,35 @@ Fallback behavior:
 
 ### Reliability updates for production extraction
 
-- Network fetching now applies retry + exponential backoff + jitter for transient failures, including HTTP 429 pressure from `realestate.com.au`.
+- Source ingestion now routes URLs through modular fetch backends: `http`, `browser` (Playwright), and `proxy-http`.
+- Domain policy defaults to browser-layer rendering for anti-bot-prone domains (for example `realestate.com.au`) with graceful fallback across backends.
+- Proxy transport supports optional rotating endpoints (environment/file configured), conservative rate limiting, and bounded retry attempts.
 - Persistent HTTP 429 responses are treated as blocked-source events, allowing source-list daily runs to continue with remaining sources.
-- `run_daily.sh` now prints a per-source completion summary (`ok`, `blocked`, `failed`) and proceeds when at least one source succeeds.
+- `run_daily.sh` now prints per-source diagnostics including `backend`, `attempts`, and `outcome` in addition to status summary (`ok`, `blocked`, `failed`).
 - Onthehouse extraction now supports both JSON-LD and modern `__NEXT_DATA__`-style payloads.
 - Supabase raw-load safely skips malformed/raw HTML payload files to avoid JSON decode crashes.
+
+Fetch policy environment configuration:
+
+```bash
+# Retry/pace policy
+export SMA_FETCH_MAX_ATTEMPTS=3
+export SMA_FETCH_RATE_LIMIT_SECONDS=0.5
+export SMA_FETCH_BACKOFF_BASE=0.5
+export SMA_FETCH_JITTER_RATIO=0.2
+
+# Domain routing
+export SMA_FETCH_BROWSER_DOMAINS="realestate.com.au"
+export SMA_FETCH_PROXY_DOMAINS="domain1.com,domain2.com"
+export SMA_FETCH_DOMAIN_BACKENDS="realestate.com.au=browser,api.example.com=proxy-http"
+
+# Optional rotating proxy endpoints
+export SMA_FETCH_PROXY_ENDPOINTS="http://proxy-a:8080,http://proxy-b:8080"
+# ...or load proxies from file (one endpoint per line)
+export SMA_FETCH_PROXY_FILE="config/proxies.txt"
+```
+
+Safety note: the browser backend only performs normal page rendering/navigation and does **not** implement captcha bypass or evasion hacks.
 
 ### 4) Run analysis module
 
