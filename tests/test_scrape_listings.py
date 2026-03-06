@@ -57,3 +57,25 @@ def test_parse_onthehouse_next_data_fixture_into_structured_records():
     assert rows[0]["rent"] == 780
     assert rows[0]["bedrooms"] == 3
     assert rows[0]["bathrooms"] == 2.0
+
+
+def test_parse_onthehouse_initial_state_fixture_extracts_records():
+    html = Path("tests/fixtures_onthehouse_initial_state.html").read_text(encoding="utf-8")
+
+    rows = scrape_listings.parse_listing_page("https://www.onthehouse.com.au/for-rent/qld/gold-coast/southport", html)
+
+    assert len(rows) == 1
+    assert rows[0]["url"].startswith("https://www.onthehouse.com.au/property/")
+    assert rows[0]["rent"] == 920
+    assert rows[0]["bedrooms"] == 4
+
+
+def test_parse_realestate_initial_state_fixture_extracts_records():
+    html = Path("tests/fixtures_realestate_initial_state.html").read_text(encoding="utf-8")
+
+    rows = scrape_listings.parse_listing_page("https://www.realestate.com.au/rent/in-southport,+qld+4215/list-1", html)
+
+    assert len(rows) == 2
+    assert rows[0]["source_site"] == "realestate"
+    assert rows[0]["url"].startswith("https://www.realestate.com.au/property-")
+    assert rows[0]["rent"] == 850
