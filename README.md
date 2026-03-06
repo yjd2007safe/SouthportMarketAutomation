@@ -92,11 +92,11 @@ Fallback behavior:
 
 ### Reliability updates for production extraction
 
-- Source ingestion now routes URLs through modular fetch backends: `http`, `browser` (Playwright), and `proxy-http`.
+- Source ingestion now routes URLs through modular fetch backends: `relay` (attached Chrome tab/session), `browser` (Playwright), `http`, and `proxy-http`.
 - Domain policy defaults to browser-layer rendering for anti-bot-prone domains (for example `realestate.com.au`) with graceful fallback across backends.
 - Proxy transport supports optional rotating endpoints (environment/file configured), conservative rate limiting, and bounded retry attempts.
 - Persistent HTTP 429 responses are treated as blocked-source events, allowing source-list daily runs to continue with remaining sources.
-- `run_daily.sh` now prints per-source diagnostics including `backend`, `attempts`, and `outcome` in addition to status summary (`ok`, `blocked`, `failed`).
+- `run_daily.sh` now prints per-source diagnostics including `backend_used`, `attempts`, and failure `reason` (for blocked/challenge/parse_failed), in addition to status summary (`ok`, `blocked`, `failed`, `parse_failed`).
 - Onthehouse extraction now supports both JSON-LD and modern `__NEXT_DATA__`-style payloads.
 - Supabase raw-load safely skips malformed/raw HTML payload files to avoid JSON decode crashes.
 
@@ -113,6 +113,7 @@ export SMA_FETCH_JITTER_RATIO=0.2
 export SMA_FETCH_BROWSER_DOMAINS="realestate.com.au"
 export SMA_FETCH_PROXY_DOMAINS="domain1.com,domain2.com"
 export SMA_FETCH_DOMAIN_BACKENDS="realestate.com.au=browser,api.example.com=proxy-http"
+export SMA_FETCH_RELAY_DOMAINS="realestate.com.au,domain.com.au,onthehouse.com.au"
 
 # Optional rotating proxy endpoints
 export SMA_FETCH_PROXY_ENDPOINTS="http://proxy-a:8080,http://proxy-b:8080"
@@ -184,6 +185,15 @@ scripts/run_daily.sh \
   --report-prefix market_report
 ```
 
+Relay-first mode (uses attached Chrome session when supported, then falls back automatically):
+
+```bash
+scripts/run_daily.sh \
+  --source-list data/sources/southport_sources.json \
+  --fetch-mode relay
+```
+
+
 If normalized data already exists, skip ingest/normalize:
 
 ```bash
@@ -197,6 +207,8 @@ scripts/run_daily.sh \
   --source-list data/sources/southport_sources.json \
   --date 2025-03-05
 ```
+
+Operator note for scheduled relay runs: ensure the relay tab is attached and logged in **before** the run starts (leave it ON/connected for `realestate`, `domain`, and `onthehouse` sources). If relay extraction fails, pipeline automatically falls back to browser/proxy/http backends.
 
 Show CLI help:
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 import random
+import subprocess
 import time
 from typing import Callable, Dict, Iterable, List, Optional
 from urllib.error import HTTPError, URLError
@@ -41,6 +42,7 @@ class FetchConfig:
     backoff_base: float = 0.5
     jitter_ratio: float = 0.2
     browser_domains: tuple[str, ...] = ("realestate.com.au",)
+    relay_domains: tuple[str, ...] = ("realestate.com.au", "domain.com.au", "onthehouse.com.au")
     proxy_domains: tuple[str, ...] = ()
     proxy_endpoints: tuple[str, ...] = ()
     domain_backends: Dict[str, str] | None = None
@@ -107,13 +109,15 @@ def load_fetch_config() -> FetchConfig:
         backoff_base=max(0.0, float(os.getenv("SMA_FETCH_BACKOFF_BASE", "0.5"))),
         jitter_ratio=max(0.0, float(os.getenv("SMA_FETCH_JITTER_RATIO", "0.2"))),
         browser_domains=_parse_csv_env("SMA_FETCH_BROWSER_DOMAINS") or ("realestate.com.au",),
+        relay_domains=_parse_csv_env("SMA_FETCH_RELAY_DOMAINS")
+        or ("realestate.com.au", "domain.com.au", "onthehouse.com.au"),
         proxy_domains=_parse_csv_env("SMA_FETCH_PROXY_DOMAINS"),
         proxy_endpoints=_load_proxy_endpoints(),
         domain_backends=mapping,
     )
 
 
-def choose_backend(url: str, config: FetchConfig) -> str:
+def choose_backend(url: str, config: FetchConfig, fetch_mode: str = "auto") -> str:
     """Choose backend by explicit mapping then domain policy."""
     host = (urlparse(url).hostname or "").lower()
 
@@ -121,6 +125,11 @@ def choose_backend(url: str, config: FetchConfig) -> str:
         for domain, backend in config.domain_backends.items():
             if host == domain or host.endswith(f".{domain}"):
                 return backend
+
+    if fetch_mode == "relay":
+        for domain in config.relay_domains:
+            if host == domain or host.endswith(f".{domain}"):
+                return "relay"
 
     for domain in config.browser_domains:
         if host == domain or host.endswith(f".{domain}"):
@@ -272,6 +281,46 @@ def _fetch_via_browser(url: str, *, timeout: int) -> FetchResult:
     )
 
 
+def _fetch_via_relay(url: str, *, timeout: int, config: FetchConfig) -> FetchResult:
+    bridge_script = os.getenv("SMA_RELAY_BRIDGE_SCRIPT", "").strip()
+    if bridge_script:
+        command = ["python3", bridge_script, url]
+        completed = subprocess.run(command, check=False, capture_output=True, text=True, timeout=timeout)
+        if completed.returncode == 0 and completed.stdout.strip():
+            return FetchResult(
+                text=completed.stdout,
+                diagnostics=FetchDiagnostics(backend="relay", attempts=1, outcome="ok", detail="bridge-script"),
+            )
+        raise RuntimeError(f"relay bridge failed: {completed.stderr.strip() or completed.returncode}")
+
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        raise RuntimeError("relay backend requires playwright") from exc
+
+    parsed = urlparse(url)
+    target_host = (parsed.hostname or "").lower()
+    cdp_url = os.getenv("SMA_RELAY_CDP_URL", "http://127.0.0.1:9222")
+    timeout_ms = max(1, int(timeout * 1000))
+
+    with sync_playwright() as p:
+        browser = p.chromium.connect_over_cdp(cdp_url)
+        for context in browser.contexts:
+            for page in context.pages:
+                page_host = (urlparse(page.url).hostname or "").lower()
+                if page_host == target_host or page_host.endswith(f".{target_host}"):
+                    page.wait_for_load_state("networkidle", timeout=timeout_ms)
+                    html = page.content()
+                    browser.close()
+                    return FetchResult(
+                        text=html,
+                        diagnostics=FetchDiagnostics(backend="relay", attempts=1, outcome="ok", detail="cdp-tab"),
+                    )
+        browser.close()
+
+    raise RuntimeError(f"relay tab not found for host={target_host}")
+
+
 def fetch_with_policy(
     url: str,
     *,
@@ -283,18 +332,23 @@ def fetch_with_policy(
     browser_fetcher: Optional[Callable[[str, int], FetchResult]] = None,
     http_fetcher: Optional[Callable[..., FetchResult]] = None,
     proxy_http_fetcher: Optional[Callable[..., FetchResult]] = None,
+    relay_fetcher: Optional[Callable[..., FetchResult]] = None,
+    fetch_mode: str = "auto",
 ) -> FetchResult:
     """Fetch text using domain-routed backend policy with graceful fallback."""
     config = config or load_fetch_config()
     attempts = max_attempts or config.max_attempts
-    backend = choose_backend(url, config)
+    backend = choose_backend(url, config, fetch_mode=fetch_mode)
 
     browser_fetcher = browser_fetcher or (lambda u, t: _fetch_via_browser(u, timeout=t))
     http_fetcher = http_fetcher or _fetch_via_http
     proxy_http_fetcher = proxy_http_fetcher or _fetch_via_proxy_http
+    relay_fetcher = relay_fetcher or (lambda u, t, c: _fetch_via_relay(u, timeout=t, config=c))
 
     backend_order: List[str]
-    if backend == "browser":
+    if backend == "relay":
+        backend_order = ["relay", "browser", "proxy-http", "http"]
+    elif backend == "browser":
         backend_order = ["browser", "proxy-http", "http"]
     elif backend == "proxy-http":
         backend_order = ["proxy-http", "http", "browser"]
@@ -324,6 +378,8 @@ def fetch_with_policy(
                 )
             elif selected == "browser":
                 result = browser_fetcher(url, timeout)
+            elif selected == "relay":
+                result = relay_fetcher(url, timeout, config)
             else:
                 continue
 

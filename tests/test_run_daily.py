@@ -51,6 +51,108 @@ def test_run_daily_end_to_end_with_source_csv(tmp_path):
     assert (log_dir / "run_2025-03-05.log").exists()
 
 
+def test_run_daily_relay_mode_falls_back_to_http_when_relay_fails(tmp_path):
+    import http.server
+    import os
+    import socketserver
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/ok.csv":
+                body = (
+                    "rent,snapshot_date,first_seen,last_seen,bedrooms,size_sqft\n"
+                    "2000,2025-03-01,2025-02-20,2025-03-05,2,740\n"
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/csv")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, format, *args):
+            return
+
+    with socketserver.TCPServer(("127.0.0.1", 0), Handler) as httpd:
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        port = httpd.server_address[1]
+
+        bridge = tmp_path / "relay_bridge.py"
+        bridge.write_text(
+            "import sys\n"
+            "print('relay failure', file=sys.stderr)\n"
+            "raise SystemExit(1)\n",
+            encoding="utf-8",
+        )
+
+        raw_dir = tmp_path / "raw"
+        normalized_dir = tmp_path / "normalized"
+        reports_dir = tmp_path / "reports"
+        log_dir = tmp_path / "logs"
+
+        script = Path(__file__).resolve().parents[1] / "scripts" / "run_daily.sh"
+        env = os.environ.copy()
+        env["SMA_RELAY_BRIDGE_SCRIPT"] = str(bridge)
+        env["SMA_FETCH_RELAY_DOMAINS"] = "127.0.0.1"
+
+        result = subprocess.run(
+            [
+                "bash",
+                str(script),
+                "--source",
+                f"http://127.0.0.1:{port}/ok.csv",
+                "--date",
+                "2025-03-05",
+                "--fetch-mode",
+                "relay",
+                "--raw-dir",
+                str(raw_dir),
+                "--normalized-dir",
+                str(normalized_dir),
+                "--reports-dir",
+                str(reports_dir),
+                "--log-dir",
+                str(log_dir),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        httpd.shutdown()
+        thread.join(timeout=2)
+
+    assert result.returncode == 0, result.stderr
+    assert "fetch_mode=relay" in result.stdout
+    assert "backend_used=http" in result.stdout
+    assert (reports_dir / "market_analysis.json").exists()
+
+
+def test_run_daily_rejects_invalid_fetch_mode(tmp_path):
+    source = tmp_path / "listings.csv"
+    source.write_text(
+        "rent,snapshot_date,first_seen,last_seen,bedrooms,size_sqft\n"
+        "1500,2025-03-01,2025-02-20,2025-03-05,1,500\n",
+        encoding="utf-8",
+    )
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "run_daily.sh"
+    result = subprocess.run(
+        ["bash", str(script), "--source", str(source), "--fetch-mode", "bad"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "invalid --fetch-mode" in result.stderr
+
+
 def test_run_daily_requires_source_or_normalized_input(tmp_path):
     script = Path(__file__).resolve().parents[1] / "scripts" / "run_daily.sh"
     result = subprocess.run(
@@ -341,7 +443,7 @@ def test_run_daily_source_list_partial_success_with_blocked_source(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "status=blocked" in result.stdout
     assert "status=ok" in result.stdout
-    assert "backend=http" in result.stdout
+    assert "backend_used=http" in result.stdout
     assert "attempts=" in result.stdout
     assert "outcome=ok" in result.stdout
     assert (reports_dir / "market_analysis.json").exists()
