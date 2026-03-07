@@ -14,12 +14,15 @@ RAW_DIR="data/raw"
 NORMALIZED_DIR="data/normalized"
 REPORTS_DIR="reports"
 LOG_DIR="logs/daily"
+HANDOFF_DIR="data/handoffs"
 ANALYSIS_PREFIX="market_analysis"
 REPORT_PREFIX="market_report"
 WITH_SUPABASE=0
 SUPABASE_SOURCE="southport_daily"
 FETCH_MODE="auto"
 STABILITY_PROFILE="default"
+RELAY_TIMEOUT_SECONDS=900
+RELAY_POLL_SECONDS=5
 
 usage() {
   cat <<'USAGE'
@@ -37,12 +40,15 @@ Options:
   --normalized-dir DIR       Directory for normalized outputs (default: data/normalized).
   --reports-dir DIR          Directory for analysis/report artifacts (default: reports).
   --log-dir DIR              Directory for run logs (default: logs/daily).
+  --handoff-dir DIR          Directory for manual relay handoff artifacts (default: data/handoffs).
   --analysis-prefix PREFIX   Prefix for analysis outputs (default: market_analysis).
   --report-prefix PREFIX     Prefix for report outputs (default: market_report).
   --with-supabase            Run optional Supabase load stage after report.
   --supabase-source SOURCE   Source label used for Supabase upserts (default: southport_daily).
   --fetch-mode MODE          Fetch mode for URL sources: auto|relay (default: auto).
   --stability-profile NAME   Fetch stability profile: default|slow (default: default).
+  --relay-timeout-seconds N  Timeout while waiting for manual relay payload (default: 900).
+  --relay-poll-seconds N     Poll interval while waiting for relay payload (default: 5).
   -h, --help                 Show this help text.
 
 Notes:
@@ -65,12 +71,15 @@ while [[ $# -gt 0 ]]; do
     --normalized-dir) NORMALIZED_DIR="${2:-}"; shift 2 ;;
     --reports-dir) REPORTS_DIR="${2:-}"; shift 2 ;;
     --log-dir) LOG_DIR="${2:-}"; shift 2 ;;
+    --handoff-dir) HANDOFF_DIR="${2:-}"; shift 2 ;;
     --analysis-prefix) ANALYSIS_PREFIX="${2:-}"; shift 2 ;;
     --report-prefix) REPORT_PREFIX="${2:-}"; shift 2 ;;
     --with-supabase) WITH_SUPABASE=1; shift ;;
     --supabase-source) SUPABASE_SOURCE="${2:-}"; shift 2 ;;
     --fetch-mode) FETCH_MODE="${2:-}"; shift 2 ;;
     --stability-profile) STABILITY_PROFILE="${2:-}"; shift 2 ;;
+    --relay-timeout-seconds) RELAY_TIMEOUT_SECONDS="${2:-}"; shift 2 ;;
+    --relay-poll-seconds) RELAY_POLL_SECONDS="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *)
       echo "Unknown argument: $1" >&2
@@ -106,12 +115,12 @@ date -u -d "${DATE}" +%F >/dev/null 2>&1 || {
   exit 2
 }
 
-mkdir -p "${RAW_DIR}" "${NORMALIZED_DIR}" "${REPORTS_DIR}" "${LOG_DIR}"
+mkdir -p "${RAW_DIR}" "${NORMALIZED_DIR}" "${REPORTS_DIR}" "${LOG_DIR}" "${HANDOFF_DIR}"
 LOG_FILE="${LOG_DIR}/run_${DATE}.log"
 exec > >(tee -a "${LOG_FILE}") 2>&1
 
 log "Starting daily pipeline date=${DATE}"
-log "Directories raw=${RAW_DIR} normalized=${NORMALIZED_DIR} reports=${REPORTS_DIR} logs=${LOG_DIR} fetch_mode=${FETCH_MODE} stability_profile=${STABILITY_PROFILE}"
+log "Directories raw=${RAW_DIR} normalized=${NORMALIZED_DIR} reports=${REPORTS_DIR} logs=${LOG_DIR} handoffs=${HANDOFF_DIR} fetch_mode=${FETCH_MODE} stability_profile=${STABILITY_PROFILE}"
 
 RAW_PATH=""
 NORMALIZED_PATH="${NORMALIZED_INPUT}"
@@ -145,6 +154,12 @@ PY
   else
     SOURCE_ITEMS=("${SOURCE}")
   fi
+
+  PRIORITY_SOURCE="${SOURCE_ITEMS[0]}"
+  PRIORITY_RELAY_NEEDED=0
+  PRIORITY_RELAY_RESOLVED=0
+  PRIORITY_HANDOFF_PATH=""
+  PRIORITY_HANDOFF_REASON=""
 
   NORMALIZED_PATHS=()
   RAW_PATHS=()
@@ -336,6 +351,10 @@ PY
         SUMMARY_LINES+=("blocked|${SOURCE_ITEM}|${BLOCK_REASON}|${BACKEND_USED}|${ATTEMPTS}|${OUTCOME}")
         CHALLENGE_BLOCKED_COUNT=$((CHALLENGE_BLOCKED_COUNT + 1))
         log "[stage:normalize] blocked source=${SOURCE_ITEM} normalized_path=${NORMALIZED_PATH} parsed_count=${PARSED_COUNT} reason=${BLOCK_REASON}"
+        if [[ "${SOURCE_ITEM}" == "${PRIORITY_SOURCE}" ]]; then
+          PRIORITY_RELAY_NEEDED=1
+          PRIORITY_HANDOFF_REASON="${BLOCK_REASON}"
+        fi
       else
         SUMMARY_LINES+=("parse_failed|${SOURCE_ITEM}|parse_failed:parsed_records=${PARSED_COUNT}|${BACKEND_USED}|${ATTEMPTS}|${OUTCOME}")
         PARSE_FAILED_COUNT=$((PARSE_FAILED_COUNT + 1))
@@ -345,12 +364,81 @@ PY
       SUMMARY_LINES+=("blocked|${SOURCE_ITEM}|${DETAIL}|${BACKEND_USED}|${ATTEMPTS}|${OUTCOME}")
       BLOCKED_COUNT=$((BLOCKED_COUNT + 1))
       log "[stage:ingest] blocked source=${SOURCE_ITEM} backend_used=${BACKEND_USED} attempts=${ATTEMPTS} outcome=${OUTCOME} detail=${DETAIL}"
+      if [[ "${SOURCE_ITEM}" == "${PRIORITY_SOURCE}" ]]; then
+        PRIORITY_RELAY_NEEDED=1
+        PRIORITY_HANDOFF_REASON="${DETAIL}"
+      fi
     else
       SUMMARY_LINES+=("failed|${SOURCE_ITEM}|${DETAIL}|${BACKEND_USED}|${ATTEMPTS}|${OUTCOME}")
       FAILED_COUNT=$((FAILED_COUNT + 1))
       log "[stage:ingest] failed source=${SOURCE_ITEM} backend_used=${BACKEND_USED} attempts=${ATTEMPTS} outcome=${OUTCOME} detail=${DETAIL}"
     fi
   done
+
+
+
+  if [[ "${PRIORITY_RELAY_NEEDED}" -eq 1 ]]; then
+    PRIORITY_HANDOFF_PATH="$(python3 -m relay_handoff create --source-url "${PRIORITY_SOURCE}" --run-date "${DATE}" --reason "${PRIORITY_HANDOFF_REASON}" --handoff-dir "${HANDOFF_DIR}")"
+    EXPECTED_PAYLOAD_PATH="$(python3 - "${PRIORITY_HANDOFF_PATH}" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+handoff = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(handoff["expected_payload_path"])
+PY
+)"
+
+    log "[stage:relay_handoff] waiting handoff_path=${PRIORITY_HANDOFF_PATH} expected_payload_path=${EXPECTED_PAYLOAD_PATH} timeout_seconds=${RELAY_TIMEOUT_SECONDS}"
+
+    START_TS="$(date +%s)"
+    while [[ ! -f "${EXPECTED_PAYLOAD_PATH}" ]]; do
+      NOW_TS="$(date +%s)"
+      ELAPSED="$((NOW_TS - START_TS))"
+      if [[ "${ELAPSED}" -ge "${RELAY_TIMEOUT_SECONDS}" ]]; then
+        python3 - "${PRIORITY_HANDOFF_PATH}" <<'PY'
+from pathlib import Path
+import relay_handoff
+import sys
+
+relay_handoff.mark_handoff_status(Path(sys.argv[1]), status="timed_out", note="No relay payload received before timeout")
+PY
+        echo "Error: relay payload not received before timeout (${RELAY_TIMEOUT_SECONDS}s)." >&2
+        exit 1
+      fi
+      log "[stage:relay_handoff] waiting elapsed_seconds=${ELAPSED}"
+      sleep "${RELAY_POLL_SECONDS}"
+    done
+
+    if ! python3 -m relay_handoff validate --handoff "${PRIORITY_HANDOFF_PATH}" --payload "${EXPECTED_PAYLOAD_PATH}"; then
+      python3 - "${PRIORITY_HANDOFF_PATH}" <<'PY'
+from pathlib import Path
+import relay_handoff
+import sys
+
+relay_handoff.mark_handoff_status(Path(sys.argv[1]), status="invalid_payload", note="Relay payload failed validation")
+PY
+      echo "Error: relay payload validation failed for ${EXPECTED_PAYLOAD_PATH}" >&2
+      exit 1
+    fi
+
+    RELAY_NORMALIZED_PATH="$(python3 -m relay_handoff materialize --handoff "${PRIORITY_HANDOFF_PATH}" --payload "${EXPECTED_PAYLOAD_PATH}" --normalized-dir "${NORMALIZED_DIR}")"
+    NORMALIZED_PATHS+=("${RELAY_NORMALIZED_PATH}")
+    SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+    PRIORITY_RELAY_RESOLVED=1
+    python3 - "${PRIORITY_HANDOFF_PATH}" "${EXPECTED_PAYLOAD_PATH}" "${RELAY_NORMALIZED_PATH}" <<'PY'
+from pathlib import Path
+import relay_handoff
+import sys
+
+relay_handoff.mark_handoff_status(
+    Path(sys.argv[1]),
+    status="completed",
+    note=f"Payload accepted: {sys.argv[2]}; normalized output: {sys.argv[3]}",
+)
+PY
+    log "[stage:relay_handoff] resumed source=${PRIORITY_SOURCE} relay_payload=${EXPECTED_PAYLOAD_PATH} normalized_path=${RELAY_NORMALIZED_PATH}"
+  fi
 
   log "[stage:source-summary] begin"
   for summary in "${SUMMARY_LINES[@]}"; do
@@ -362,6 +450,9 @@ PY
     fi
   done
   log "[stage:source-summary] totals success=${SUCCESS_COUNT} blocked=${BLOCKED_COUNT} challenge_blocked=${CHALLENGE_BLOCKED_COUNT} failed=${FAILED_COUNT} parse_failed=${PARSE_FAILED_COUNT}"
+  if [[ "${PRIORITY_RELAY_NEEDED}" -eq 1 ]]; then
+    log "[stage:relay_handoff] status needed=${PRIORITY_RELAY_NEEDED} resolved=${PRIORITY_RELAY_RESOLVED} handoff_path=${PRIORITY_HANDOFF_PATH}"
+  fi
 
   if [[ "${#NORMALIZED_PATHS[@]}" -eq 0 ]]; then
     echo "Error: all sources blocked/parse_failed/failed; no normalized outputs available." >&2
@@ -392,11 +483,15 @@ for path in inputs:
 output.write_text(json.dumps(rows, indent=2), encoding="utf-8")
 PY
     NORMALIZED_PATH="${COMBINED_PATH}"
-    RAW_PATH="${RAW_PATHS[0]}"
+    if [[ "${#RAW_PATHS[@]}" -gt 0 ]]; then
+      RAW_PATH="${RAW_PATHS[0]}"
+    fi
     log "[stage:normalize] combined source list normalized_path=${NORMALIZED_PATH}"
   else
     NORMALIZED_PATH="${NORMALIZED_PATHS[0]}"
-    RAW_PATH="${RAW_PATHS[0]}"
+    if [[ "${#RAW_PATHS[@]}" -gt 0 ]]; then
+      RAW_PATH="${RAW_PATHS[0]}"
+    fi
   fi
 else
   log "[stage:normalize] skipped using provided normalized input path=${NORMALIZED_INPUT}"

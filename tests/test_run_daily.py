@@ -1,6 +1,7 @@
 import functools
 from pathlib import Path
 import subprocess
+import time
 
 
 def test_run_daily_end_to_end_with_source_csv(tmp_path):
@@ -391,18 +392,18 @@ def test_run_daily_source_list_partial_success_with_blocked_source(tmp_path):
             json.dumps(
                 [
                     {
-                        "url": f"http://127.0.0.1:{port}/blocked",
-                        "site": "realestate.com.au",
-                        "category": "search",
-                        "confidence": 0.95,
-                        "notes": "blocked",
-                    },
-                    {
                         "url": f"http://127.0.0.1:{port}/ok.csv",
                         "site": "local-http",
                         "category": "search",
                         "confidence": 0.92,
                         "notes": "ok",
+                    },
+                    {
+                        "url": f"http://127.0.0.1:{port}/blocked",
+                        "site": "realestate.com.au",
+                        "category": "search",
+                        "confidence": 0.95,
+                        "notes": "blocked",
                     },
                 ]
             ),
@@ -556,18 +557,18 @@ def test_run_daily_source_list_continues_on_challenge_blocked_html(tmp_path):
             json.dumps(
                 [
                     {
-                        "url": f"http://127.0.0.1:{port}/blocked",
-                        "site": "realestate.com.au",
-                        "category": "search",
-                        "confidence": 0.95,
-                        "notes": "kasada blocked",
-                    },
-                    {
                         "url": f"http://127.0.0.1:{port}/ok.csv",
                         "site": "local-http",
                         "category": "search",
                         "confidence": 0.90,
                         "notes": "ingestable",
+                    },
+                    {
+                        "url": f"http://127.0.0.1:{port}/blocked",
+                        "site": "realestate.com.au",
+                        "category": "search",
+                        "confidence": 0.95,
+                        "notes": "kasada blocked",
                     },
                 ]
             ),
@@ -729,3 +730,193 @@ def test_run_daily_rejects_invalid_stability_profile(tmp_path):
 
     assert result.returncode != 0
     assert "invalid --stability-profile" in result.stderr
+
+
+def test_run_daily_creates_relay_handoff_and_times_out_without_payload(tmp_path):
+    import functools
+    import json
+    import http.server
+    import socketserver
+    import threading
+
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+    blocked_html = Path(__file__).resolve().parent / "fixtures_kasada_blockpage.html"
+    (source_dir / "blocked").write_text(blocked_html.read_text(encoding="utf-8"), encoding="utf-8")
+
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(source_dir))
+    with socketserver.TCPServer(("127.0.0.1", 0), handler) as httpd:
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        port = httpd.server_address[1]
+
+        source_list = tmp_path / "sources.json"
+        source_list.write_text(
+            json.dumps(
+                [
+                    {
+                        "url": f"http://127.0.0.1:{port}/blocked",
+                        "site": "realestate.com.au",
+                        "category": "search",
+                        "confidence": 0.95,
+                        "notes": "priority blocked",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        handoff_dir = tmp_path / "handoffs"
+        script = Path(__file__).resolve().parents[1] / "scripts" / "run_daily.sh"
+        result = subprocess.run(
+            [
+                "bash",
+                str(script),
+                "--source-list",
+                str(source_list),
+                "--date",
+                "2025-03-05",
+                "--handoff-dir",
+                str(handoff_dir),
+                "--relay-timeout-seconds",
+                "1",
+                "--relay-poll-seconds",
+                "1",
+                "--raw-dir",
+                str(tmp_path / "raw"),
+                "--normalized-dir",
+                str(tmp_path / "normalized"),
+                "--reports-dir",
+                str(tmp_path / "reports"),
+                "--log-dir",
+                str(tmp_path / "logs"),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        httpd.shutdown()
+        thread.join(timeout=2)
+
+    assert result.returncode != 0
+    artifacts = list(handoff_dir.glob("pending_relay_*.json"))
+    assert artifacts
+    payload = json.loads(artifacts[0].read_text(encoding="utf-8"))
+    assert payload["status"] == "timed_out"
+    assert "relay_handoff" in result.stdout
+
+
+def test_run_daily_resumes_with_manual_relay_payload(tmp_path):
+    import functools
+    import json
+    import http.server
+    import socketserver
+    import threading
+
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+    blocked_html = Path(__file__).resolve().parent / "fixtures_kasada_blockpage.html"
+    (source_dir / "blocked").write_text(blocked_html.read_text(encoding="utf-8"), encoding="utf-8")
+
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(source_dir))
+
+    def operator_write_payload(handoff_dir: Path):
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            candidates = list(handoff_dir.glob("pending_relay_*.json"))
+            if candidates:
+                handoff = json.loads(candidates[0].read_text(encoding="utf-8"))
+                payload_path = Path(handoff["expected_payload_path"])
+                payload_path.parent.mkdir(parents=True, exist_ok=True)
+                payload_path.write_text(
+                    json.dumps(
+                        {
+                            "handoff_id": handoff["handoff_id"],
+                            "source_url": handoff["source_url"],
+                            "run_date": handoff["run_date"],
+                            "listings": [
+                                {
+                                    "listing_id": "lst_relay_1",
+                                    "rent": 2300,
+                                    "snapshot_date": "2025-03-05",
+                                    "first_seen": "2025-03-01",
+                                    "last_seen": "2025-03-05",
+                                    "bedrooms": 2,
+                                    "size_sqft": 720,
+                                }
+                            ],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return
+            time.sleep(0.1)
+
+    with socketserver.TCPServer(("127.0.0.1", 0), handler) as httpd:
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        port = httpd.server_address[1]
+
+        source_list = tmp_path / "sources.json"
+        source_list.write_text(
+            json.dumps(
+                [
+                    {
+                        "url": f"http://127.0.0.1:{port}/blocked",
+                        "site": "realestate.com.au",
+                        "category": "search",
+                        "confidence": 0.95,
+                        "notes": "priority blocked",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        handoff_dir = tmp_path / "handoffs"
+        operator = threading.Thread(target=operator_write_payload, args=(handoff_dir,), daemon=True)
+        operator.start()
+
+        script = Path(__file__).resolve().parents[1] / "scripts" / "run_daily.sh"
+        reports_dir = tmp_path / "reports"
+        result = subprocess.run(
+            [
+                "bash",
+                str(script),
+                "--source-list",
+                str(source_list),
+                "--date",
+                "2025-03-05",
+                "--handoff-dir",
+                str(handoff_dir),
+                "--relay-timeout-seconds",
+                "8",
+                "--relay-poll-seconds",
+                "1",
+                "--raw-dir",
+                str(tmp_path / "raw"),
+                "--normalized-dir",
+                str(tmp_path / "normalized"),
+                "--reports-dir",
+                str(reports_dir),
+                "--log-dir",
+                str(tmp_path / "logs"),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        operator.join(timeout=2)
+        httpd.shutdown()
+        thread.join(timeout=2)
+
+    assert result.returncode == 0, result.stderr
+    artifacts = list(handoff_dir.glob("pending_relay_*.json"))
+    assert artifacts
+    payload = json.loads(artifacts[0].read_text(encoding="utf-8"))
+    assert payload["status"] == "completed"
+    assert "relay_handoff" in result.stdout
+    assert "resumed" in result.stdout
+    assert (reports_dir / "market_analysis.json").exists()

@@ -234,6 +234,69 @@ scripts/run_daily.sh --help
 ```
 
 
+### Human-in-the-loop relay fallback (priority-source challenge/blocked)
+
+`run_daily.sh` now supports a structured manual relay handoff when the **priority source** (first source in `--source-list`, or the single `--source`) is challenge/blocked.
+
+Behavior:
+
+- Emits handoff artifact: `data/handoffs/pending_relay_*.json` (or `--handoff-dir`).
+- Logs waiting/resumed/completed status in `run_daily` output.
+- Waits for operator payload up to `--relay-timeout-seconds` (default `900`), polling every `--relay-poll-seconds` (default `5`).
+- Aborts with non-zero exit and marks handoff `status=timed_out` if payload never arrives.
+
+Stable handoff schema (`pending_relay_*.json`):
+
+- `schema_version`
+- `handoff_id`
+- `status` (`pending`, `timed_out`, `invalid_payload`, `resumed`, `completed`)
+- `run_date`
+- `source_url`
+- `required_schema.required_keys` (default: `listing_id`, `rent`, `snapshot_date`)
+- `required_schema.min_records` (default: `1`)
+- `expected_payload_path`
+
+Manual relay payload schema (operator file at `expected_payload_path`):
+
+```json
+{
+  "handoff_id": "relay_2025-03-05_ab12cd34",
+  "source_url": "https://example.com/listings",
+  "run_date": "2025-03-05",
+  "listings": [
+    {
+      "listing_id": "lst_123",
+      "rent": 2300,
+      "snapshot_date": "2025-03-05",
+      "first_seen": "2025-03-01",
+      "last_seen": "2025-03-05",
+      "bedrooms": 2,
+      "size_sqft": 720
+    }
+  ]
+}
+```
+
+Validation rules:
+
+- Required top-level keys: `handoff_id`, `source_url`, `run_date`, `listings`.
+- `handoff_id`, `source_url`, and `run_date` must match the pending handoff artifact.
+- `listings` must be an array with at least `min_records`.
+- Every listing must include all `required_keys` with non-empty values.
+
+One-command resume (no failed fetch rerun):
+
+```bash
+scripts/resume_from_relay.sh   --handoff data/handoffs/pending_relay_<id>.json   --payload data/handoffs/relay_payload_<id>.json   --reports-dir reports
+```
+
+Optional with Supabase stage:
+
+```bash
+scripts/resume_from_relay.sh   --handoff data/handoffs/pending_relay_<id>.json   --payload data/handoffs/relay_payload_<id>.json   --date 2025-03-05   --with-supabase   --supabase-source southport_daily_relay
+```
+
+
 ## Supabase persistence
 
 Schema migration SQL for Supabase is provided in:
