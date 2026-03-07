@@ -474,33 +474,50 @@ def _fetch_via_relay(
 
     with sync_playwright() as p:
         browser = p.chromium.connect_over_cdp(cdp_url, **connect_kwargs)
+
+        target_page = None
+        fallback_page = None
+
         for context in browser.contexts:
             for page in context.pages:
+                if fallback_page is None:
+                    fallback_page = page
                 page_host = (urlparse(page.url).hostname or "").lower()
                 if page_host == target_host or page_host.endswith(f".{target_host}"):
-                    page.wait_for_load_state("networkidle", timeout=timeout_ms)
-                    for selector in LISTING_SELECTORS:
-                        try:
-                            page.wait_for_selector(selector, timeout=ready_timeout_ms)
-                            break
-                        except PlaywrightTimeoutError:
-                            continue
-                    if stability_policy.browser_settle_seconds > 0:
-                        sleep_fn(stability_policy.browser_settle_seconds)
-                    html = page.content()
-                    challenge = _classify_challenge(html)
-                    browser.close()
-                    if challenge:
-                        raise ChallengeDetectedError(challenge, "relay")
-                    if not _has_meaningful_listing_content(html):
-                        raise RuntimeError("relay tab returned no meaningful listing content")
-                    return FetchResult(
-                        text=html,
-                        diagnostics=FetchDiagnostics(backend="relay", attempts=1, outcome="ok", detail="cdp-tab"),
-                    )
+                    target_page = page
+                    break
+            if target_page is not None:
+                break
+
+        if target_page is None:
+            if fallback_page is None:
+                browser.close()
+                raise RuntimeError("relay has no attached pages")
+            target_page = fallback_page
+            target_page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+
+        target_page.wait_for_load_state("networkidle", timeout=timeout_ms)
+        for selector in LISTING_SELECTORS:
+            try:
+                target_page.wait_for_selector(selector, timeout=ready_timeout_ms)
+                break
+            except PlaywrightTimeoutError:
+                continue
+        if stability_policy.browser_settle_seconds > 0:
+            sleep_fn(stability_policy.browser_settle_seconds)
+
+        html = target_page.content()
+        challenge = _classify_challenge(html)
         browser.close()
 
-    raise RuntimeError(f"relay tab not found for host={target_host}")
+        if challenge:
+            raise ChallengeDetectedError(challenge, "relay")
+        if not _has_meaningful_listing_content(html):
+            raise RuntimeError("relay tab returned no meaningful listing content")
+        return FetchResult(
+            text=html,
+            diagnostics=FetchDiagnostics(backend="relay", attempts=1, outcome="ok", detail="cdp-tab"),
+        )
 
 
 def fetch_with_policy(
