@@ -218,9 +218,15 @@ def _resolve_gateway_token() -> str:
 
 
 def _resolve_relay_auth_header_and_token(cdp_url: str) -> tuple[str, str]:
-    header = os.getenv("SMA_RELAY_AUTH_HEADER", "x-openclaw-relay-token").strip() or "x-openclaw-relay-token"
+    header = (
+        os.getenv("SMA_RELAY_AUTH_HEADER", "").strip()
+        or os.getenv("OPENCLAW_RELAY_AUTH_HEADER", "").strip()
+        or "x-openclaw-relay-token"
+    )
 
-    explicit = os.getenv("SMA_RELAY_AUTH_TOKEN", "").strip()
+    explicit = os.getenv("SMA_RELAY_AUTH_TOKEN", "").strip() or os.getenv(
+        "OPENCLAW_RELAY_AUTH_TOKEN", ""
+    ).strip()
     if explicit:
         return header, explicit
 
@@ -229,13 +235,25 @@ def _resolve_relay_auth_header_and_token(cdp_url: str) -> tuple[str, str]:
         return header, ""
 
     parsed = urlparse(cdp_url)
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    default_port_by_scheme = {"http": 80, "https": 443, "ws": 80, "wss": 443}
+    override_port = os.getenv("SMA_RELAY_AUTH_PORT", "").strip()
+    port = int(override_port) if override_port else parsed.port or default_port_by_scheme.get(parsed.scheme, 80)
     relay_token = hmac.new(
         gateway_token.encode("utf-8"),
         f"openclaw-extension-relay-v1:{port}".encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
     return header, relay_token
+
+
+def _hosts_match(first: str, second: str) -> bool:
+    if not first or not second:
+        return False
+    return (
+        first == second
+        or first.endswith(f".{second}")
+        or second.endswith(f".{first}")
+    )
 
 
 def _sleep_with_backoff(
@@ -483,7 +501,7 @@ def _fetch_via_relay(
                 if fallback_page is None:
                     fallback_page = page
                 page_host = (urlparse(page.url).hostname or "").lower()
-                if page_host == target_host or page_host.endswith(f".{target_host}"):
+                if _hosts_match(page_host, target_host):
                     target_page = page
                     break
             if target_page is not None:
