@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import hmac
+import json
 import os
 import random
 import subprocess
 import time
+from pathlib import Path
 from typing import Callable, Dict, List, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -194,6 +198,44 @@ def choose_backend(url: str, config: FetchConfig, fetch_mode: str = "auto") -> s
             return "proxy-http"
 
     return "http"
+
+
+def _resolve_gateway_token() -> str:
+    env_token = os.getenv("OPENCLAW_GATEWAY_TOKEN", "").strip()
+    if env_token:
+        return env_token
+
+    config_path = Path.home() / ".openclaw" / "openclaw.json"
+    if config_path.exists():
+        try:
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            token = str(payload.get("gateway", {}).get("auth", {}).get("token", "")).strip()
+            if token:
+                return token
+        except Exception:
+            return ""
+    return ""
+
+
+def _resolve_relay_auth_header_and_token(cdp_url: str) -> tuple[str, str]:
+    header = os.getenv("SMA_RELAY_AUTH_HEADER", "x-openclaw-relay-token").strip() or "x-openclaw-relay-token"
+
+    explicit = os.getenv("SMA_RELAY_AUTH_TOKEN", "").strip()
+    if explicit:
+        return header, explicit
+
+    gateway_token = _resolve_gateway_token()
+    if not gateway_token:
+        return header, ""
+
+    parsed = urlparse(cdp_url)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    relay_token = hmac.new(
+        gateway_token.encode("utf-8"),
+        f"openclaw-extension-relay-v1:{port}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return header, relay_token
 
 
 def _sleep_with_backoff(
@@ -422,11 +464,16 @@ def _fetch_via_relay(
     parsed = urlparse(url)
     target_host = (parsed.hostname or "").lower()
     cdp_url = os.getenv("SMA_RELAY_CDP_URL", "http://127.0.0.1:9222")
+    relay_auth_header, relay_auth_token = _resolve_relay_auth_header_and_token(cdp_url)
+    connect_kwargs = {}
+    if relay_auth_token:
+        connect_kwargs["headers"] = {relay_auth_header: relay_auth_token}
+
     timeout_ms = max(1, int(timeout * 1000))
     ready_timeout_ms = max(1, int(stability_policy.browser_ready_timeout_seconds * 1000))
 
     with sync_playwright() as p:
-        browser = p.chromium.connect_over_cdp(cdp_url)
+        browser = p.chromium.connect_over_cdp(cdp_url, **connect_kwargs)
         for context in browser.contexts:
             for page in context.pages:
                 page_host = (urlparse(page.url).hostname or "").lower()
