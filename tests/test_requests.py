@@ -240,3 +240,116 @@ def test_fetch_with_policy_sets_stability_profile_and_challenge_diagnostics():
     assert result.diagnostics.stability_profile == "slow"
     assert result.diagnostics.challenge_detected == "kasada"
     assert result.diagnostics.challenge_retry_attempted is True
+
+
+
+def test_resolve_relay_auth_header_and_token_uses_gateway_token_and_relay_port(monkeypatch):
+    monkeypatch.setenv("OPENCLAW_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.delenv("SMA_RELAY_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("OPENCLAW_RELAY_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("SMA_RELAY_AUTH_HEADER", raising=False)
+    monkeypatch.delenv("OPENCLAW_RELAY_AUTH_HEADER", raising=False)
+    monkeypatch.delenv("SMA_RELAY_AUTH_PORT", raising=False)
+
+    header, token = requests._resolve_relay_auth_header_and_token("http://127.0.0.1:18792")
+
+    assert header == "x-openclaw-relay-token"
+    assert token == "0d41838ac6a7451e9ebcc7dd209a7a2e147b1369044d4a9ca96bb871563b8213"
+
+
+def test_resolve_relay_auth_header_and_token_supports_env_overrides(monkeypatch):
+    monkeypatch.setenv("OPENCLAW_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("OPENCLAW_RELAY_AUTH_HEADER", "x-custom-relay")
+    monkeypatch.setenv("OPENCLAW_RELAY_AUTH_TOKEN", "explicit-token")
+
+    header, token = requests._resolve_relay_auth_header_and_token("ws://127.0.0.1:9222/devtools/browser/abc")
+
+    assert header == "x-custom-relay"
+    assert token == "explicit-token"
+
+
+def test_fetch_via_relay_reuses_any_attached_tab_when_host_not_pre_attached(monkeypatch):
+    class DummyPage:
+        def __init__(self, url, html):
+            self.url = url
+            self._html = html
+            self.goto_calls = []
+
+        def goto(self, target_url, wait_until, timeout):
+            self.goto_calls.append((target_url, wait_until, timeout))
+            self.url = target_url
+
+        def wait_for_load_state(self, state, timeout):
+            return None
+
+        def wait_for_selector(self, selector, timeout):
+            return None
+
+        def content(self):
+            return self._html
+
+    class DummyContext:
+        def __init__(self, pages):
+            self.pages = pages
+
+    class DummyBrowser:
+        def __init__(self, contexts):
+            self.contexts = contexts
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class DummyChromium:
+        def __init__(self, browser):
+            self.browser = browser
+            self.connect_calls = []
+
+        def connect_over_cdp(self, cdp_url, **kwargs):
+            self.connect_calls.append((cdp_url, kwargs))
+            return self.browser
+
+    class DummyPlaywright:
+        def __init__(self, chromium):
+            self.chromium = chromium
+
+    class DummySyncPlaywright:
+        def __init__(self, playwright):
+            self.playwright = playwright
+
+        def __enter__(self):
+            return self.playwright
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    page = DummyPage("https://example.net/home", "<html><a href=\"/property/123\">listing</a></html>")
+    browser = DummyBrowser([DummyContext([page])])
+    chromium = DummyChromium(browser)
+
+    import sys
+    import types
+
+    playwright_sync_api = types.ModuleType("playwright.sync_api")
+    playwright_sync_api.TimeoutError = RuntimeError
+    playwright_sync_api.sync_playwright = lambda: DummySyncPlaywright(DummyPlaywright(chromium))
+    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", playwright_sync_api)
+
+    monkeypatch.setenv("SMA_RELAY_CDP_URL", "http://127.0.0.1:18792")
+    monkeypatch.setenv("OPENCLAW_GATEWAY_TOKEN", "gateway-secret")
+
+    result = requests._fetch_via_relay(
+        "https://www.realestate.com.au/rent",
+        timeout=2,
+        config=requests.FetchConfig(),
+        stability_policy=requests.get_stability_policy("default"),
+        sleep_fn=lambda _: None,
+    )
+
+    assert result.diagnostics.backend == "relay"
+    assert result.diagnostics.detail == "cdp-tab"
+    assert page.goto_calls == [("https://www.realestate.com.au/rent", "networkidle", 2000)]
+    assert chromium.connect_calls[0][1]["headers"] == {
+        "x-openclaw-relay-token": "0d41838ac6a7451e9ebcc7dd209a7a2e147b1369044d4a9ca96bb871563b8213"
+    }
