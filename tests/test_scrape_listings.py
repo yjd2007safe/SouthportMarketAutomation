@@ -23,6 +23,16 @@ def test_parse_onthehouse_ldjson_fixture_into_structured_records():
     assert "Southport" in first["raw_snippet"]
 
 
+
+
+def test_parse_onthehouse_for_sale_route_uses_existing_parser():
+    html = Path("tests/fixtures_onthehouse_search.html").read_text(encoding="utf-8")
+
+    rows = scrape_listings.parse_listing_page("https://www.onthehouse.com.au/for-sale/qld/gold-coast/southport", html)
+
+    assert len(rows) == 2
+    assert rows[0]["source_site"] == "onthehouse"
+    assert rows[0]["price"] == 650
 def test_parse_onthehouse_fallback_card_extracts_partial_record():
     html = """
     <html><body>

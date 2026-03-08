@@ -5,7 +5,8 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
+import os
+from typing import Dict, List, Optional, Tuple, Union
 from urllib.parse import urlparse
 
 
@@ -62,3 +63,13 @@ def create_output_path(
     ts = timestamp or datetime.now(timezone.utc)
     stamp = ts.strftime("%Y%m%dT%H%M%SZ")
     return output_dir / f"{stem}_{stamp}.json"
+
+
+def resolve_navigation_profile(source_metadata: Optional[Dict[str, object]] = None) -> Optional[str]:
+    """Resolve nav profile from source metadata first, then SMA_NAV_PROFILE."""
+    if source_metadata:
+        value = str(source_metadata.get("navigation_profile", "")).strip()
+        if value:
+            return value
+    env_value = os.getenv("SMA_NAV_PROFILE", "").strip()
+    return env_value or None

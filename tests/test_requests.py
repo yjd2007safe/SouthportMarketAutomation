@@ -240,3 +240,30 @@ def test_fetch_with_policy_sets_stability_profile_and_challenge_diagnostics():
     assert result.diagnostics.stability_profile == "slow"
     assert result.diagnostics.challenge_detected == "kasada"
     assert result.diagnostics.challenge_retry_attempted is True
+
+
+def test_load_navigation_profile_returns_known_profile():
+    profile = requests.load_navigation_profile("onthehouse_sale_southport")
+
+    assert profile is not None
+    assert profile.start_url == "https://www.onthehouse.com.au"
+    assert "for sale" in profile.search_query.lower()
+
+
+def test_load_navigation_profile_rejects_unknown_profile():
+    with pytest.raises(ValueError, match="Unknown navigation profile"):
+        requests.load_navigation_profile("unknown_profile")
+
+
+def test_url_matches_navigation_profile_for_sale_route_only():
+    profile = requests.load_navigation_profile("onthehouse_sale_southport")
+
+    assert profile is not None
+    assert requests._url_matches_navigation_profile(
+        "https://www.onthehouse.com.au/for-sale/qld/gold-coast/southport",
+        profile,
+    )
+    assert not requests._url_matches_navigation_profile(
+        "https://www.onthehouse.com.au/for-rent/qld/gold-coast/southport",
+        profile,
+    )

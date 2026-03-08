@@ -40,3 +40,19 @@ def test_create_output_path_uses_filename_override(tmp_path):
     fixed = datetime(2025, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
     out_path = ingest.create_output_path(tmp_path, "https://example.com/feed.json", filename="custom", timestamp=fixed)
     assert out_path.name == "custom_20250102T030405Z.json"
+
+
+def test_resolve_navigation_profile_prefers_source_metadata_over_env(monkeypatch):
+    monkeypatch.setenv("SMA_NAV_PROFILE", "onthehouse_sale_southport")
+    profile = ingest.resolve_navigation_profile({"navigation_profile": "custom_profile"})
+    assert profile == "custom_profile"
+
+
+def test_resolve_navigation_profile_uses_env_default(monkeypatch):
+    monkeypatch.setenv("SMA_NAV_PROFILE", "onthehouse_sale_southport")
+    assert ingest.resolve_navigation_profile() == "onthehouse_sale_southport"
+
+
+def test_resolve_navigation_profile_empty_when_not_set(monkeypatch):
+    monkeypatch.delenv("SMA_NAV_PROFILE", raising=False)
+    assert ingest.resolve_navigation_profile() is None

@@ -67,6 +67,7 @@ When `run_daily.sh` ingests sources from `--source-list`, web search/listing pag
 Supported adapters:
 
 - **onthehouse**: implemented parser for listing/search HTML (prefers JSON-LD, with basic card-text fallback).
+  - Works for both rental and **FOR SALE** search/listing routes (for example `/for-sale/qld/gold-coast/southport`).
 - **realestate**: adapter placeholder present (currently returns no records).
 - **domain**: adapter placeholder present (currently returns no records).
 
@@ -122,6 +123,35 @@ export SMA_FETCH_PROXY_FILE="config/proxies.txt"
 ```
 
 Safety note: the browser backend only performs normal page rendering/navigation and does **not** implement captcha bypass or evasion hacks.
+
+
+Navigation profile support (anti-bot safe browser/relay flow):
+
+- You can set `SMA_NAV_PROFILE=onthehouse_sale_southport` to avoid relying on fixed deep-link URLs.
+- The profile starts from `https://www.onthehouse.com.au`, performs a homepage search for Southport QLD **FOR SALE** listings, waits for stable listing results, then extracts HTML for existing parsers.
+- For `--source-list`, per-source metadata can override env default using `"navigation_profile": "onthehouse_sale_southport"`.
+- Direct URL sources remain backward-compatible: if no navigation profile is set, fetch behaves exactly as before.
+
+Example source-list entry:
+
+```json
+{
+  "url": "https://www.onthehouse.com.au/for-sale/qld/gold-coast/southport",
+  "site": "onthehouse.com.au",
+  "category": "search",
+  "confidence": 0.95,
+  "notes": "Southport FOR SALE listings",
+  "navigation_profile": "onthehouse_sale_southport"
+}
+```
+
+Operator instructions for relay/browser runs with navigation profiles:
+
+1. Keep relay-attached browser session open and authenticated before scheduled run.
+2. Export `SMA_NAV_PROFILE=onthehouse_sale_southport` (or set source metadata override).
+3. Use `--stability-profile slow` for fragile sessions/challenge-prone windows.
+4. Verify `run_daily` logs include `nav_profile=onthehouse_sale_southport` for affected sources.
+
 
 Slow-stable profile (`--stability-profile slow`) operational guidance:
 
