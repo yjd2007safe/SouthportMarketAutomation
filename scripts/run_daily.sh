@@ -47,6 +47,7 @@ Options:
   --supabase-source SOURCE   Source label used for Supabase upserts (default: southport_daily).
   --fetch-mode MODE          Fetch mode for URL sources: auto|relay (default: auto).
   --stability-profile NAME   Fetch stability profile: default|slow (default: default).
+                            Navigation profile comes from SMA_NAV_PROFILE or source-list metadata.navigation_profile.
   --relay-timeout-seconds N  Timeout while waiting for manual relay payload (default: 900).
   --relay-poll-seconds N     Poll interval while waiting for relay payload (default: 5).
   -h, --help                 Show this help text.
@@ -143,7 +144,9 @@ import discover_sources
 
 items = discover_sources.load_sources_file(Path(sys.argv[1]))
 for source in discover_sources.filter_ingestable_sources(items):
-    print(source["url"])
+    url = str(source["url"]).strip()
+    nav_profile = str(source.get("navigation_profile", "")).strip()
+    print(f"{url}	{nav_profile}")
 PY
 )
 
@@ -152,10 +155,10 @@ PY
       exit 1
     fi
   else
-    SOURCE_ITEMS=("${SOURCE}")
+    SOURCE_ITEMS=("${SOURCE}	${SMA_NAV_PROFILE:-}")
   fi
 
-  PRIORITY_SOURCE="${SOURCE_ITEMS[0]}"
+  IFS=$'\t' read -r PRIORITY_SOURCE PRIORITY_NAV_PROFILE <<<"${SOURCE_ITEMS[0]}"
   PRIORITY_RELAY_NEEDED=0
   PRIORITY_RELAY_RESOLVED=0
   PRIORITY_HANDOFF_PATH=""
@@ -170,8 +173,9 @@ PY
   PARSE_FAILED_COUNT=0
   CHALLENGE_BLOCKED_COUNT=0
 
-  for SOURCE_ITEM in "${SOURCE_ITEMS[@]}"; do
-    INGEST_RESULT="$(python3 - "${SOURCE_ITEM}" "${RAW_DIR}" "${DATE}" "${FETCH_MODE}" "${STABILITY_PROFILE}" <<'PY'
+  for SOURCE_ENTRY in "${SOURCE_ITEMS[@]}"; do
+    IFS=$'\t' read -r SOURCE_ITEM SOURCE_NAV_PROFILE <<<"${SOURCE_ENTRY}"
+    INGEST_RESULT="$(python3 - "${SOURCE_ITEM}" "${RAW_DIR}" "${DATE}" "${FETCH_MODE}" "${STABILITY_PROFILE}" "${SOURCE_NAV_PROFILE}" <<'PY'
 from datetime import datetime, timezone
 from pathlib import Path
 import shutil
@@ -186,6 +190,7 @@ raw_dir = Path(sys.argv[2])
 run_date = datetime.strptime(sys.argv[3], "%Y-%m-%d").replace(tzinfo=timezone.utc)
 fetch_mode = sys.argv[4]
 stability_profile = sys.argv[5]
+source_nav_profile = (sys.argv[6] or "").strip()
 
 source_type, normalized_source = ingest.resolve_source(source)
 output_path = ingest.create_output_path(raw_dir, normalized_source, timestamp=run_date)
@@ -207,6 +212,7 @@ try:
             normalized_source,
             fetch_mode=fetch_mode,
             stability_profile=stability_profile,
+            navigation_profile=source_nav_profile or None,
         )
         body = fetch_result.text
         backend = fetch_result.diagnostics.backend
@@ -263,6 +269,7 @@ print(
             f"STABILITY_PROFILE={diag_stability_profile}",
             f"CHALLENGE={diag_challenge}",
             f"CHALLENGE_RETRY_ATTEMPTED={diag_challenge_retry_attempted}",
+            f"NAV_PROFILE={source_nav_profile}",
         ]
     )
 )
@@ -277,11 +284,12 @@ PY
     DIAG_STABILITY_PROFILE="$(printf '%s\n' "${INGEST_RESULT}" | awk -F= '/^STABILITY_PROFILE=/{print $2; exit}')"
     DIAG_CHALLENGE="$(printf '%s\n' "${INGEST_RESULT}" | awk -F= '/^CHALLENGE=/{print $2; exit}')"
     DIAG_CHALLENGE_RETRY="$(printf '%s\n' "${INGEST_RESULT}" | awk -F= '/^CHALLENGE_RETRY_ATTEMPTED=/{print $2; exit}')"
+    DIAG_NAV_PROFILE="$(printf '%s\n' "${INGEST_RESULT}" | awk -F= '/^NAV_PROFILE=/{print $2; exit}')"
 
     if [[ "${STATUS}" == "ok" ]]; then
       RAW_PATH="$(printf '%s\n' "${INGEST_RESULT}" | awk -F= '/^RAW_PATH=/{print $2; exit}')"
       RAW_PATHS+=("${RAW_PATH}")
-      log "[stage:ingest] complete source=${SOURCE_ITEM} raw_path=${RAW_PATH} backend_used=${BACKEND_USED} attempts=${ATTEMPTS} outcome=${OUTCOME} stability_profile=${DIAG_STABILITY_PROFILE} challenge=${DIAG_CHALLENGE} challenge_retry_attempted=${DIAG_CHALLENGE_RETRY}"
+      log "[stage:ingest] complete source=${SOURCE_ITEM} raw_path=${RAW_PATH} backend_used=${BACKEND_USED} attempts=${ATTEMPTS} outcome=${OUTCOME} stability_profile=${DIAG_STABILITY_PROFILE} challenge=${DIAG_CHALLENGE} challenge_retry_attempted=${DIAG_CHALLENGE_RETRY} nav_profile=${DIAG_NAV_PROFILE}"
 
       NORMALIZE_RESULT="$(python3 - "${RAW_PATH}" "${NORMALIZED_DIR}" "${DATE}" "${SOURCE_ITEM}" <<'PY'
 from datetime import datetime, timezone
@@ -344,7 +352,7 @@ PY
 
       if [[ "${NORMALIZED_STATUS}" == "ok" ]]; then
         NORMALIZED_PATHS+=("${NORMALIZED_PATH}")
-        SUMMARY_LINES+=("ok|${SOURCE_ITEM}|${RAW_PATH}|${NORMALIZED_PATH}|${BACKEND_USED}|${ATTEMPTS}|${OUTCOME}|${DETAIL}|${PARSED_COUNT}")
+        SUMMARY_LINES+=("ok|${SOURCE_ITEM}|${RAW_PATH}|${NORMALIZED_PATH}|${BACKEND_USED}|${ATTEMPTS}|${OUTCOME}|${DETAIL}|${DIAG_NAV_PROFILE}|${PARSED_COUNT}")
         SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
         log "[stage:normalize] complete source=${SOURCE_ITEM} normalized_path=${NORMALIZED_PATH} parsed_count=${PARSED_COUNT}"
       elif [[ "${NORMALIZED_STATUS}" == "blocked" ]]; then
@@ -442,9 +450,9 @@ PY
 
   log "[stage:source-summary] begin"
   for summary in "${SUMMARY_LINES[@]}"; do
-    IFS='|' read -r state src a b c d e f g <<<"${summary}"
+    IFS='|' read -r state src a b c d e f g h <<<"${summary}"
     if [[ "${state}" == "ok" ]]; then
-      log "[stage:source-summary] status=ok source=${src} raw_path=${a} normalized_path=${b} backend_used=${c} attempts=${d} outcome=${e} reason=${f} parsed_count=${g}"
+      log "[stage:source-summary] status=ok source=${src} raw_path=${a} normalized_path=${b} backend_used=${c} attempts=${d} outcome=${e} reason=${f} nav_profile=${g} parsed_count=${h}"
     else
       log "[stage:source-summary] status=${state} source=${src} reason=${a} backend_used=${b} attempts=${c} outcome=${d}"
     fi

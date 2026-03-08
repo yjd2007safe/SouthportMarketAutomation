@@ -920,3 +920,75 @@ def test_run_daily_resumes_with_manual_relay_payload(tmp_path):
     assert "relay_handoff" in result.stdout
     assert "resumed" in result.stdout
     assert (reports_dir / "market_analysis.json").exists()
+
+
+def test_run_daily_source_list_passes_navigation_profile_metadata(tmp_path):
+    import http.server
+    import json
+    import socketserver
+    import threading
+
+    source_dir = tmp_path / "http_sources"
+    source_dir.mkdir()
+    (source_dir / "a.csv").write_text(
+        "rent,snapshot_date,first_seen,last_seen,bedrooms,size_sqft\n"
+        "2100,2025-03-01,2025-02-20,2025-03-05,2,740\n",
+        encoding="utf-8",
+    )
+
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(source_dir))
+    with socketserver.TCPServer(("127.0.0.1", 0), handler) as httpd:
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        port = httpd.server_address[1]
+
+        source_list = tmp_path / "sources.json"
+        source_list.write_text(
+            json.dumps(
+                [
+                    {
+                        "url": f"http://127.0.0.1:{port}/a.csv",
+                        "site": "onthehouse.com.au",
+                        "category": "search",
+                        "confidence": 0.95,
+                        "notes": "ingestable",
+                        "navigation_profile": "onthehouse_sale_southport",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        raw_dir = tmp_path / "raw"
+        normalized_dir = tmp_path / "normalized"
+        reports_dir = tmp_path / "reports"
+        log_dir = tmp_path / "logs"
+
+        script = Path(__file__).resolve().parents[1] / "scripts" / "run_daily.sh"
+        result = subprocess.run(
+            [
+                "bash",
+                str(script),
+                "--source-list",
+                str(source_list),
+                "--date",
+                "2025-03-05",
+                "--raw-dir",
+                str(raw_dir),
+                "--normalized-dir",
+                str(normalized_dir),
+                "--reports-dir",
+                str(reports_dir),
+                "--log-dir",
+                str(log_dir),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        httpd.shutdown()
+        thread.join(timeout=2)
+
+    assert result.returncode == 0, result.stderr
+    assert "nav_profile=onthehouse_sale_southport" in result.stdout

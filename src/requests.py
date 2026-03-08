@@ -11,7 +11,7 @@ import random
 import subprocess
 import time
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import ProxyHandler, Request, build_opener, urlopen
@@ -36,6 +36,68 @@ LISTING_HTML_MARKERS = (
     "data-testid=\"listing",
     "/property/",
 )
+
+SEARCH_INPUT_SELECTORS = (
+    "input[type='search']",
+    "input[placeholder*='Search' i]",
+    "input[aria-label*='Search' i]",
+    "input[name='q']",
+)
+
+
+@dataclass(frozen=True)
+class NavigationProfile:
+    name: str
+    start_url: str
+    search_query: str
+    required_url_tokens: tuple[str, ...] = ()
+    forbidden_url_tokens: tuple[str, ...] = ()
+
+
+NAVIGATION_PROFILES: Dict[str, NavigationProfile] = {
+    "onthehouse_sale_southport": NavigationProfile(
+        name="onthehouse_sale_southport",
+        start_url="https://www.onthehouse.com.au",
+        search_query="Southport QLD property for sale",
+        required_url_tokens=("sale", "southport"),
+        forbidden_url_tokens=("rent", "for-rent"),
+    )
+}
+
+
+def load_navigation_profile(name: Optional[str]) -> Optional[NavigationProfile]:
+    normalized = (name or "").strip().lower()
+    if not normalized:
+        return None
+    if normalized not in NAVIGATION_PROFILES:
+        known = ", ".join(sorted(NAVIGATION_PROFILES))
+        raise ValueError(f"Unknown navigation profile: {name!r}. Known profiles: {known}")
+    return NAVIGATION_PROFILES[normalized]
+
+
+def _url_matches_navigation_profile(url: str, profile: NavigationProfile) -> bool:
+    lowered = url.lower()
+    if profile.required_url_tokens and not all(token in lowered for token in profile.required_url_tokens):
+        return False
+    if any(token in lowered for token in profile.forbidden_url_tokens):
+        return False
+    return True
+
+
+def _navigate_listing_search(page: Any, profile: NavigationProfile, timeout_ms: int, ready_timeout_ms: int) -> None:
+    page.goto(profile.start_url, wait_until="domcontentloaded", timeout=timeout_ms)
+
+    for selector in SEARCH_INPUT_SELECTORS:
+        try:
+            page.wait_for_selector(selector, timeout=ready_timeout_ms)
+            page.fill(selector, profile.search_query)
+            page.press(selector, "Enter")
+            page.wait_for_load_state("networkidle", timeout=timeout_ms)
+            return
+        except Exception:
+            continue
+
+    raise RuntimeError(f"navigation profile {profile.name!r} could not find a search input")
 
 
 class BlockedSourceError(RuntimeError):
@@ -218,15 +280,9 @@ def _resolve_gateway_token() -> str:
 
 
 def _resolve_relay_auth_header_and_token(cdp_url: str) -> tuple[str, str]:
-    header = (
-        os.getenv("SMA_RELAY_AUTH_HEADER", "").strip()
-        or os.getenv("OPENCLAW_RELAY_AUTH_HEADER", "").strip()
-        or "x-openclaw-relay-token"
-    )
+    header = os.getenv("SMA_RELAY_AUTH_HEADER", "x-openclaw-relay-token").strip() or "x-openclaw-relay-token"
 
-    explicit = os.getenv("SMA_RELAY_AUTH_TOKEN", "").strip() or os.getenv(
-        "OPENCLAW_RELAY_AUTH_TOKEN", ""
-    ).strip()
+    explicit = os.getenv("SMA_RELAY_AUTH_TOKEN", "").strip()
     if explicit:
         return header, explicit
 
@@ -235,25 +291,13 @@ def _resolve_relay_auth_header_and_token(cdp_url: str) -> tuple[str, str]:
         return header, ""
 
     parsed = urlparse(cdp_url)
-    default_port_by_scheme = {"http": 80, "https": 443, "ws": 80, "wss": 443}
-    override_port = os.getenv("SMA_RELAY_AUTH_PORT", "").strip()
-    port = int(override_port) if override_port else parsed.port or default_port_by_scheme.get(parsed.scheme, 80)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
     relay_token = hmac.new(
         gateway_token.encode("utf-8"),
         f"openclaw-extension-relay-v1:{port}".encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
     return header, relay_token
-
-
-def _hosts_match(first: str, second: str) -> bool:
-    if not first or not second:
-        return False
-    return (
-        first == second
-        or first.endswith(f".{second}")
-        or second.endswith(f".{first}")
-    )
 
 
 def _sleep_with_backoff(
@@ -393,6 +437,7 @@ def _fetch_via_browser(
     timeout: int,
     stability_policy: StabilityPolicy,
     sleep_fn: Callable[[float], None],
+    navigation_profile: Optional[NavigationProfile] = None,
 ) -> FetchResult:
     try:
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -410,7 +455,10 @@ def _fetch_via_browser(
         page = context.new_page()
 
         for attempt in range(1, 3):
-            page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+            if navigation_profile is not None:
+                _navigate_listing_search(page, navigation_profile, timeout_ms, ready_timeout_ms)
+            else:
+                page.goto(url, wait_until="networkidle", timeout=timeout_ms)
             for selector in LISTING_SELECTORS:
                 try:
                     page.wait_for_selector(selector, timeout=ready_timeout_ms)
@@ -419,6 +467,12 @@ def _fetch_via_browser(
                     continue
             if stability_policy.browser_settle_seconds > 0:
                 sleep_fn(stability_policy.browser_settle_seconds)
+
+            current_url = page.url
+            if navigation_profile is not None and not _url_matches_navigation_profile(current_url, navigation_profile):
+                raise RuntimeError(
+                    f"navigation profile {navigation_profile.name} landed on unexpected url: {current_url}"
+                )
 
             html = page.content()
             challenge = _classify_challenge(html)
@@ -455,6 +509,7 @@ def _fetch_via_relay(
     config: FetchConfig,
     stability_policy: StabilityPolicy,
     sleep_fn: Callable[[float], None],
+    navigation_profile: Optional[NavigationProfile] = None,
 ) -> FetchResult:
     bridge_script = os.getenv("SMA_RELAY_BRIDGE_SCRIPT", "").strip()
     if bridge_script:
@@ -501,7 +556,7 @@ def _fetch_via_relay(
                 if fallback_page is None:
                     fallback_page = page
                 page_host = (urlparse(page.url).hostname or "").lower()
-                if _hosts_match(page_host, target_host):
+                if page_host == target_host or page_host.endswith(f".{target_host}"):
                     target_page = page
                     break
             if target_page is not None:
@@ -512,9 +567,12 @@ def _fetch_via_relay(
                 browser.close()
                 raise RuntimeError("relay has no attached pages")
             target_page = fallback_page
-            target_page.goto(url, wait_until="networkidle", timeout=timeout_ms)
 
-        target_page.wait_for_load_state("networkidle", timeout=timeout_ms)
+        if navigation_profile is not None:
+            _navigate_listing_search(target_page, navigation_profile, timeout_ms, ready_timeout_ms)
+        else:
+            target_page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+            target_page.wait_for_load_state("networkidle", timeout=timeout_ms)
         for selector in LISTING_SELECTORS:
             try:
                 target_page.wait_for_selector(selector, timeout=ready_timeout_ms)
@@ -523,6 +581,13 @@ def _fetch_via_relay(
                 continue
         if stability_policy.browser_settle_seconds > 0:
             sleep_fn(stability_policy.browser_settle_seconds)
+
+        current_url = target_page.url
+        if navigation_profile is not None and not _url_matches_navigation_profile(current_url, navigation_profile):
+            browser.close()
+            raise RuntimeError(
+                f"navigation profile {navigation_profile.name} landed on unexpected url: {current_url}"
+            )
 
         html = target_page.content()
         challenge = _classify_challenge(html)
@@ -552,10 +617,12 @@ def fetch_with_policy(
     relay_fetcher: Optional[Callable[..., FetchResult]] = None,
     fetch_mode: str = "auto",
     stability_profile: str = "default",
+    navigation_profile: Optional[str] = None,
 ) -> FetchResult:
     """Fetch text using domain-routed backend policy with graceful fallback."""
     config = config or load_fetch_config()
     policy = get_stability_policy(stability_profile)
+    nav_profile = load_navigation_profile(navigation_profile)
     attempts = max_attempts or config.max_attempts
     tuned_config = FetchConfig(
         max_attempts=config.max_attempts,
@@ -571,7 +638,13 @@ def fetch_with_policy(
     backend = choose_backend(url, tuned_config, fetch_mode=fetch_mode)
 
     browser_fetcher = browser_fetcher or (
-        lambda u, t: _fetch_via_browser(u, timeout=t, stability_policy=policy, sleep_fn=sleep_fn)
+        lambda u, t: _fetch_via_browser(
+            u,
+            timeout=t,
+            stability_policy=policy,
+            sleep_fn=sleep_fn,
+            navigation_profile=nav_profile,
+        )
     )
     http_fetcher = http_fetcher or _fetch_via_http
     proxy_http_fetcher = proxy_http_fetcher or _fetch_via_proxy_http
@@ -582,6 +655,7 @@ def fetch_with_policy(
             config=c,
             stability_policy=policy,
             sleep_fn=sleep_fn,
+            navigation_profile=nav_profile,
         )
     )
 
