@@ -1143,8 +1143,9 @@ def test_run_daily_generates_weekly_on_saturday(tmp_path):
     assert result.returncode == 0
     assert "mode=weekly" in result.stdout
     assert "mode=monthly" not in result.stdout
-    assert (reports_dir / "market_report_weekly.json").exists()
-    assert not (reports_dir / "market_report_monthly.json").exists()
+    assert (reports_dir / "market_report_weekly_exec.json").exists()
+    assert (reports_dir / "market_report_weekly_detailed.json").exists()
+    assert not (reports_dir / "market_report_monthly_exec.json").exists()
 
 
 def test_run_daily_generates_weekly_and_monthly_when_both_conditions(tmp_path):
@@ -1178,5 +1179,46 @@ def test_run_daily_generates_weekly_and_monthly_when_both_conditions(tmp_path):
     assert result.returncode == 0
     assert "mode=weekly" in result.stdout
     assert "mode=monthly" in result.stdout
-    assert (reports_dir / "market_report_weekly.json").exists()
-    assert (reports_dir / "market_report_monthly.json").exists()
+    assert (reports_dir / "market_report_weekly_exec.json").exists()
+    assert (reports_dir / "market_report_weekly_detailed.json").exists()
+    assert (reports_dir / "market_report_monthly_exec.json").exists()
+    assert (reports_dir / "market_report_monthly_detailed.json").exists()
+
+def test_run_daily_saturday_generates_weekly_exec_and_detailed_reports(tmp_path):
+    normalized = tmp_path / "normalized.json"
+    normalized.write_text(
+        """[
+  {"global_key":"id:a","status":"sold","sold_date":"2025-03-03","property_category":"house","price":900000}
+]""",
+        encoding="utf-8",
+    )
+
+    reports_dir = tmp_path / "reports"
+    log_dir = tmp_path / "logs"
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "run_daily.sh"
+    result = subprocess.run(
+        [
+            "bash",
+            str(script),
+            "--no-supabase",
+            "--normalized-input",
+            str(normalized),
+            "--date",
+            "2025-03-08",
+            "--reports-dir",
+            str(reports_dir),
+            "--log-dir",
+            str(log_dir),
+            "--report-local-output-mode",
+            "persist",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (reports_dir / "market_report_weekly_exec.json").exists()
+    assert (reports_dir / "market_report_weekly_detailed.json").exists()
+    assert not (reports_dir / "market_report_monthly_exec.json").exists()

@@ -583,26 +583,29 @@ if [[ "${#REPORT_MODES[@]}" -eq 0 ]]; then
   log "[stage:report] skipped (non-Saturday and not first day of month)"
 else
   for MODE in "${REPORT_MODES[@]}"; do
-    REPORT_TYPE="${MODE}_sales_report"
-    OUTPUT_PREFIX="${REPORT_PREFIX}_${MODE}"
-    REPORT_ARGS=(
-      --reports-dir "${REPORTS_DIR}"
-      --analysis-prefix "${ANALYSIS_PREFIX}"
-      --output-prefix "${OUTPUT_PREFIX}"
-      --date "${DATE}"
-      --source "${SUPABASE_SOURCE}"
-      --report-type "${REPORT_TYPE}"
-      --report-version "v2"
-      --report-mode "${MODE}"
-      --records-input "${NORMALIZED_PATH}"
-      --local-output-mode "${REPORT_LOCAL_OUTPUT_MODE}"
-    )
-    if [[ "${WITH_SUPABASE}" -eq 1 ]]; then
-      REPORT_ARGS+=(--persist-supabase)
-    fi
-    log "[stage:report] begin mode=${MODE}"
-    python3 -m report "${REPORT_ARGS[@]}"
-    log "[stage:report] complete mode=${MODE}"
+    for PRODUCT in exec detailed; do
+      REPORT_TYPE="${MODE}_sales_report_${PRODUCT}"
+      OUTPUT_PREFIX="${REPORT_PREFIX}_${MODE}_${PRODUCT}"
+      REPORT_ARGS=(
+        --reports-dir "${REPORTS_DIR}"
+        --analysis-prefix "${ANALYSIS_PREFIX}"
+        --output-prefix "${OUTPUT_PREFIX}"
+        --date "${DATE}"
+        --source "${SUPABASE_SOURCE}"
+        --report-type "${REPORT_TYPE}"
+        --report-version "v3"
+        --report-mode "${MODE}"
+        --report-product "${PRODUCT}"
+        --records-input "${NORMALIZED_PATH}"
+        --local-output-mode "${REPORT_LOCAL_OUTPUT_MODE}"
+      )
+      if [[ "${WITH_SUPABASE}" -eq 1 ]]; then
+        REPORT_ARGS+=(--persist-supabase)
+      fi
+      log "[stage:report] begin mode=${MODE} product=${PRODUCT}"
+      python3 -m report "${REPORT_ARGS[@]}"
+      log "[stage:report] complete mode=${MODE} product=${PRODUCT}"
+    done
   done
 fi
 
