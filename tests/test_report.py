@@ -37,7 +37,17 @@ def test_run_report_writes_markdown_csv_and_json(tmp_path):
         json.dumps(_analysis_payload()), encoding="utf-8"
     )
 
-    outputs = report.run_report(reports_dir, "market_analysis", "market_report")
+    outputs = report.run_report(
+        reports_dir,
+        "market_analysis",
+        "market_report",
+        snapshot_date="2025-03-05",
+        source="southport_daily",
+        report_type="market_report",
+        report_version="v1",
+        local_output_mode="persist",
+        persist_supabase=False,
+    )
 
     assert set(outputs.keys()) == {"json", "csv", "markdown"}
     assert outputs["json"].exists()
@@ -83,8 +93,31 @@ def test_parse_args_reads_cli_flags():
             "daily_analysis",
             "--output-prefix",
             "daily_report",
+            "--date",
+            "2025-03-05",
         ]
     )
     assert args.reports_dir == "reports"
     assert args.analysis_prefix == "daily_analysis"
     assert args.output_prefix == "daily_report"
+
+
+def test_run_report_temp_mode_writes_no_persistent_artifacts(tmp_path):
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    (reports_dir / "market_analysis.json").write_text(json.dumps(_analysis_payload()), encoding="utf-8")
+
+    outputs = report.run_report(
+        reports_dir,
+        "market_analysis",
+        "market_report",
+        snapshot_date="2025-03-05",
+        source="southport_daily",
+        report_type="market_report",
+        report_version="v1",
+        local_output_mode="temp",
+        persist_supabase=False,
+    )
+
+    assert outputs == {}
+    assert not (reports_dir / "market_report.json").exists()

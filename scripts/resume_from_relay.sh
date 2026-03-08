@@ -84,7 +84,20 @@ python3 -m analyze --input "${NORMALIZED_PATH}" --reports-dir "${REPORTS_DIR}" -
 log "[stage:analyze] complete"
 
 log "[stage:report] begin"
-python3 -m report --reports-dir "${REPORTS_DIR}" --analysis-prefix "${ANALYSIS_PREFIX}" --output-prefix "${REPORT_PREFIX}"
+REPORT_ARGS=(
+  --reports-dir "${REPORTS_DIR}"
+  --analysis-prefix "${ANALYSIS_PREFIX}"
+  --output-prefix "${REPORT_PREFIX}"
+  --date "${DATE}"
+  --source "${SUPABASE_SOURCE}"
+  --report-type "${REPORT_PREFIX}"
+  --report-version "v1"
+  --local-output-mode "none"
+)
+if [[ "${WITH_SUPABASE}" -eq 1 ]]; then
+  REPORT_ARGS+=(--persist-supabase)
+fi
+python3 -m report "${REPORT_ARGS[@]}"
 log "[stage:report] complete"
 
 if [[ "${WITH_SUPABASE}" -eq 1 ]]; then

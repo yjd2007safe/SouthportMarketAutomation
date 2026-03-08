@@ -17,8 +17,9 @@ LOG_DIR="logs/daily"
 HANDOFF_DIR="data/handoffs"
 ANALYSIS_PREFIX="market_analysis"
 REPORT_PREFIX="market_report"
-WITH_SUPABASE=0
+WITH_SUPABASE=1
 SUPABASE_SOURCE="southport_daily"
+REPORT_LOCAL_OUTPUT_MODE="none"
 FETCH_MODE="auto"
 STABILITY_PROFILE="default"
 RELAY_TIMEOUT_SECONDS=900
@@ -43,7 +44,9 @@ Options:
   --handoff-dir DIR          Directory for manual relay handoff artifacts (default: data/handoffs).
   --analysis-prefix PREFIX   Prefix for analysis outputs (default: market_analysis).
   --report-prefix PREFIX     Prefix for report outputs (default: market_report).
-  --with-supabase            Run optional Supabase load stage after report.
+  --with-supabase            Enable Supabase stages (default: enabled).
+  --no-supabase              Disable Supabase stages.
+  --report-local-output-mode MODE  Local report artifacts: none|persist|temp (default: none).
   --supabase-source SOURCE   Source label used for Supabase upserts (default: southport_daily).
   --fetch-mode MODE          Fetch mode for URL sources: auto|relay (default: auto).
   --stability-profile NAME   Fetch stability profile: default|slow (default: default).
@@ -76,6 +79,8 @@ while [[ $# -gt 0 ]]; do
     --analysis-prefix) ANALYSIS_PREFIX="${2:-}"; shift 2 ;;
     --report-prefix) REPORT_PREFIX="${2:-}"; shift 2 ;;
     --with-supabase) WITH_SUPABASE=1; shift ;;
+    --no-supabase) WITH_SUPABASE=0; shift ;;
+    --report-local-output-mode) REPORT_LOCAL_OUTPUT_MODE="${2:-}"; shift 2 ;;
     --supabase-source) SUPABASE_SOURCE="${2:-}"; shift 2 ;;
     --fetch-mode) FETCH_MODE="${2:-}"; shift 2 ;;
     --stability-profile) STABILITY_PROFILE="${2:-}"; shift 2 ;;
@@ -100,6 +105,11 @@ if [[ "${STABILITY_PROFILE}" != "default" && "${STABILITY_PROFILE}" != "slow" ]]
   exit 2
 fi
 
+if [[ "${REPORT_LOCAL_OUTPUT_MODE}" != "none" && "${REPORT_LOCAL_OUTPUT_MODE}" != "persist" && "${REPORT_LOCAL_OUTPUT_MODE}" != "temp" ]]; then
+  echo "Error: invalid --report-local-output-mode '${REPORT_LOCAL_OUTPUT_MODE}'. Expected none, persist, or temp." >&2
+  exit 2
+fi
+
 if [[ -z "${SOURCE}" && -z "${SOURCE_LIST}" && -z "${NORMALIZED_INPUT}" ]]; then
   echo "Error: provide --source, --source-list, or --normalized-input." >&2
   usage >&2
@@ -121,7 +131,7 @@ LOG_FILE="${LOG_DIR}/run_${DATE}.log"
 exec > >(tee -a "${LOG_FILE}") 2>&1
 
 log "Starting daily pipeline date=${DATE}"
-log "Directories raw=${RAW_DIR} normalized=${NORMALIZED_DIR} reports=${REPORTS_DIR} logs=${LOG_DIR} handoffs=${HANDOFF_DIR} fetch_mode=${FETCH_MODE} stability_profile=${STABILITY_PROFILE}"
+log "Directories raw=${RAW_DIR} normalized=${NORMALIZED_DIR} reports=${REPORTS_DIR} logs=${LOG_DIR} handoffs=${HANDOFF_DIR} fetch_mode=${FETCH_MODE} stability_profile=${STABILITY_PROFILE} report_local_output_mode=${REPORT_LOCAL_OUTPUT_MODE} with_supabase=${WITH_SUPABASE}"
 
 RAW_PATH=""
 NORMALIZED_PATH="${NORMALIZED_INPUT}"
@@ -529,7 +539,20 @@ python3 -m analyze --input "${NORMALIZED_PATH}" --reports-dir "${REPORTS_DIR}" -
 log "[stage:analyze] complete"
 
 log "[stage:report] begin"
-python3 -m report --reports-dir "${REPORTS_DIR}" --analysis-prefix "${ANALYSIS_PREFIX}" --output-prefix "${REPORT_PREFIX}"
+REPORT_ARGS=(
+  --reports-dir "${REPORTS_DIR}"
+  --analysis-prefix "${ANALYSIS_PREFIX}"
+  --output-prefix "${REPORT_PREFIX}"
+  --date "${DATE}"
+  --source "${SUPABASE_SOURCE}"
+  --report-type "${REPORT_PREFIX}"
+  --report-version "v1"
+  --local-output-mode "${REPORT_LOCAL_OUTPUT_MODE}"
+)
+if [[ "${WITH_SUPABASE}" -eq 1 ]]; then
+  REPORT_ARGS+=(--persist-supabase)
+fi
+python3 -m report "${REPORT_ARGS[@]}"
 log "[stage:report] complete"
 
 if [[ "${WITH_SUPABASE}" -eq 1 ]]; then

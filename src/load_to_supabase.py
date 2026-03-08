@@ -26,6 +26,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--raw-input", help="Path to raw ingestion snapshot (JSON/CSV)")
     parser.add_argument("--date", required=True, help="Snapshot date (YYYY-MM-DD)")
     parser.add_argument("--source", default="southport_daily", help="Source label used in table keys")
+    parser.add_argument("--report-json", help="Path to market report JSON artifact")
+    parser.add_argument("--report-markdown", help="Path to market report markdown artifact")
+    parser.add_argument("--report-type", default="market_report", help="Report artifact type")
+    parser.add_argument("--report-version", default="v1", help="Report schema/version label")
     return parser.parse_args(argv)
 
 
@@ -135,6 +139,27 @@ def prepare_daily_summary_rows(summary: JsonDict, snapshot_date: str, source: st
     ]
 
 
+def prepare_market_report_row(
+    *,
+    snapshot_date: str,
+    source: str,
+    report_type: str,
+    report_version: str,
+    record_count: int,
+    report_markdown: str,
+    report_json: JsonDict,
+) -> JsonDict:
+    return {
+        "snapshot_date": snapshot_date,
+        "source": source,
+        "report_type": report_type,
+        "report_version": report_version,
+        "record_count": int(record_count),
+        "report_markdown": report_markdown,
+        "report_json": report_json,
+    }
+
+
 def upsert_rows(
     *,
     supabase_url: str,
@@ -178,6 +203,10 @@ def run_load(
     source: str,
     summary_json: Optional[Path] = None,
     raw_input: Optional[Path] = None,
+    report_json: Optional[Path] = None,
+    report_markdown: Optional[Path] = None,
+    report_type: str = "market_report",
+    report_version: str = "v1",
     env: Optional[Dict[str, str]] = None,
     request_fn: Optional[Callable[..., Any]] = None,
 ) -> None:
@@ -219,6 +248,27 @@ def run_load(
             request_fn=request_fn,
         )
 
+    if report_json is not None and report_json.exists() and report_markdown is not None and report_markdown.exists():
+        report_payload = json.loads(report_json.read_text(encoding="utf-8"))
+        report_md = report_markdown.read_text(encoding="utf-8")
+        report_row = prepare_market_report_row(
+            snapshot_date=snapshot_date,
+            source=source,
+            report_type=report_type,
+            report_version=report_version,
+            record_count=int(report_payload.get("record_count", 0) or 0),
+            report_markdown=report_md,
+            report_json=report_payload,
+        )
+        upsert_rows(
+            supabase_url=supabase_url,
+            supabase_key=supabase_key,
+            table="market_reports",
+            rows=[report_row],
+            on_conflict="snapshot_date,source,report_type,report_version",
+            request_fn=request_fn,
+        )
+
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
@@ -227,6 +277,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         normalized_input=Path(args.normalized_input),
         summary_json=Path(args.summary_json) if args.summary_json else None,
         raw_input=Path(args.raw_input) if args.raw_input else None,
+        report_json=Path(args.report_json) if args.report_json else None,
+        report_markdown=Path(args.report_markdown) if args.report_markdown else None,
+        report_type=args.report_type,
+        report_version=args.report_version,
         snapshot_date=snapshot_date,
         source=args.source,
     )
