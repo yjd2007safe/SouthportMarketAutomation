@@ -100,6 +100,8 @@ Fallback behavior:
 - `run_daily.sh` now prints per-source diagnostics including `backend_used`, `attempts`, `stability_profile`, challenge classification/retry flags, and failure `reason` (for blocked/challenge/parse_failed), in addition to status summary (`ok`, `blocked`, `failed`, `parse_failed`).
 - Onthehouse extraction now supports both JSON-LD and modern `__NEXT_DATA__`-style payloads.
 - Supabase raw-load safely skips malformed/raw HTML payload files to avoid JSON decode crashes.
+- Relay scraping now opens and closes only pipeline-managed tabs, preventing relay tab buildup while preserving unrelated user tabs in the attached browser session.
+- Multi-source `--source-list` runs now apply cross-site normalization plus global dedup before analyze/report/supabase, while preserving provenance fields (`source_url`, `source_site`, `url`) and emitting a stable `global_key` (prefer reliable `listing_id`, then canonical address/url hash fallback).
 
 Fetch policy environment configuration:
 
@@ -201,7 +203,7 @@ PYTHONPATH=src python -m report --reports-dir reports --analysis-prefix market_a
 
 ### 6) Run the full daily pipeline in one command
 
-Use `scripts/run_daily.sh` to orchestrate ingest -> normalize -> analyze -> report
+Use `scripts/run_daily.sh` to orchestrate ingest -> normalize -> global clean/dedup -> analyze -> report
 with stage logs, directory bootstrapping, and non-zero exits on failure.
 
 ```bash

@@ -23,7 +23,7 @@ def test_prepare_rows_are_deterministic():
         {
             "snapshot_date": "2025-03-05",
             "source": "daily",
-            "listing_key": "abc",
+            "listing_key": "id:abc",
             "payload": '{"bedrooms":2,"id":"abc","rent":2000,"size_sqft":820}',
         }
     ]
@@ -31,8 +31,8 @@ def test_prepare_rows_are_deterministic():
         {
             "snapshot_date": "2025-03-05",
             "source": "daily",
-            "listing_key": "abc",
-            "payload": '{"bedrooms":2,"id":"abc","rent":2000,"size_sqft":820}',
+            "listing_key": "id:abc",
+            "payload": '{"bedrooms":2,"global_key":"id:abc","id":"abc","rent":2000,"size_sqft":820}',
             "rent": 2000,
             "bedrooms": 2,
             "size_sqft": 820,

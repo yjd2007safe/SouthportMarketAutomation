@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import json
 import re
 import os
@@ -14,6 +13,8 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tupl
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+
+from record_cleaning import normalize_and_dedupe_records, stable_global_key
 
 JsonDict = Dict[str, Any]
 
@@ -68,12 +69,10 @@ def _read_rows(path: Path) -> List[JsonDict]:
 
 
 def _listing_key(row: JsonDict) -> str:
-    for candidate in ("listing_id", "id", "url", "address"):
-        value = row.get(candidate)
-        if value not in (None, ""):
-            return str(value)
-    stable = json.dumps(row, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(stable.encode("utf-8")).hexdigest()[:16]
+    existing = str(row.get("global_key") or "").strip()
+    if existing:
+        return existing
+    return stable_global_key(row)
 
 
 def _as_json_text(value: JsonDict) -> str:
@@ -97,7 +96,7 @@ def prepare_raw_rows(rows: Iterable[JsonDict], snapshot_date: str, source: str) 
 
 def prepare_clean_rows(rows: Iterable[JsonDict], snapshot_date: str, source: str) -> List[JsonDict]:
     output = []
-    for row in rows:
+    for row in normalize_and_dedupe_records(rows):
         listing_key = _listing_key(row)
         output.append(
             {

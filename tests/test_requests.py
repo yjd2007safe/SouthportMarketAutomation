@@ -267,3 +267,83 @@ def test_url_matches_navigation_profile_for_sale_route_only():
         "https://www.onthehouse.com.au/for-rent/qld/gold-coast/southport",
         profile,
     )
+
+def test_fetch_via_relay_closes_only_managed_tab(monkeypatch):
+    class DummyPage:
+        def __init__(self, url="about:blank"):
+            self.url = url
+            self.closed = False
+
+        def goto(self, url, **kwargs):
+            self.url = url
+
+        def wait_for_load_state(self, *args, **kwargs):
+            return None
+
+        def wait_for_selector(self, *args, **kwargs):
+            return None
+
+        def content(self):
+            return "<html><body><a href='/property/1'>listing</a></body></html>"
+
+        def close(self):
+            self.closed = True
+
+    class DummyContext:
+        def __init__(self):
+            self.pages = [DummyPage("https://user-tab.example.com")]
+            self.created_pages = []
+
+        def new_page(self):
+            page = DummyPage()
+            self.created_pages.append(page)
+            return page
+
+    class DummyBrowser:
+        def __init__(self):
+            self.contexts = [DummyContext()]
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    browser = DummyBrowser()
+
+    class DummyChromium:
+        def connect_over_cdp(self, *args, **kwargs):
+            return browser
+
+    class DummyPlaywright:
+        chromium = DummyChromium()
+
+    class DummyManager:
+        def __enter__(self):
+            return DummyPlaywright()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class DummyTimeoutError(Exception):
+        pass
+
+    import sys
+    import types
+
+    monkeypatch.setitem(
+        sys.modules,
+        "playwright.sync_api",
+        types.SimpleNamespace(TimeoutError=DummyTimeoutError, sync_playwright=lambda: DummyManager()),
+    )
+
+    result = requests._fetch_via_relay(
+        "https://www.realestate.com.au/property-1",
+        timeout=5,
+        config=requests.FetchConfig(),
+        stability_policy=requests.get_stability_policy(),
+        sleep_fn=lambda _: None,
+    )
+
+    assert result.diagnostics.backend == "relay"
+    assert browser.contexts[0].pages[0].closed is False
+    assert len(browser.contexts[0].created_pages) == 1
+    assert browser.contexts[0].created_pages[0].closed is True
