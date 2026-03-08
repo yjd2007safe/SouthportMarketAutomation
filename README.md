@@ -166,8 +166,8 @@ Slow-stable profile (`--stability-profile slow`) operational guidance:
 ### 4) Run analysis module
 
 Once you have normalized records (JSON or CSV), run analysis to generate
-machine-readable reports (`.json`, `.csv`) and a markdown summary under
-`reports/` by default.
+machine-readable analysis outputs under `reports/` by default.
+Generated final report artifacts are DB-first (persisted to Supabase `market_reports`) unless you explicitly enable local report files.
 
 ```bash
 PYTHONPATH=src python -m analyze --input data/normalized/listings.json
@@ -186,10 +186,10 @@ PYTHONPATH=src python -m analyze \
 ### 5) Run report module
 
 After `analyze` writes its outputs to `reports/`, run `report` to generate
-final market report artifacts (`.md`, `.csv`, and `.json`) in the same directory.
+final market report payloads. By default, use Supabase persistence (`market_reports`) and no local report files.
 
 ```bash
-PYTHONPATH=src python -m report   --reports-dir reports   --analysis-prefix market_analysis   --output-prefix market_report
+PYTHONPATH=src python -m report   --reports-dir reports   --analysis-prefix market_analysis   --output-prefix market_report   --date 2025-03-05   --source southport_daily   --persist-supabase
 ```
 
 ### Full pipeline example (ingest -> analyze -> report)
@@ -197,7 +197,7 @@ PYTHONPATH=src python -m report   --reports-dir reports   --analysis-prefix mark
 ```bash
 scripts/run_ingest.sh --source ./path/to/listings.csv --output-dir data/raw --filename snapshot
 PYTHONPATH=src python -m analyze --input data/normalized/listings.json --reports-dir reports --prefix market_analysis
-PYTHONPATH=src python -m report --reports-dir reports --analysis-prefix market_analysis --output-prefix market_report
+PYTHONPATH=src python -m report --reports-dir reports --analysis-prefix market_analysis --output-prefix market_report --date 2025-03-05 --source southport_daily --persist-supabase
 ```
 
 
@@ -355,4 +355,28 @@ Or enable Supabase loading in the daily orchestrator:
 scripts/run_daily.sh   --source ./path/to/listings.csv   --date 2025-03-05   --with-supabase   --supabase-source southport_daily
 ```
 
-Without `--with-supabase`, local behavior is unchanged.
+`run_daily.sh` is now DB-first by default (`--with-supabase` implied) and avoids persistent local report files unless `--report-local-output-mode persist` is set.
+Use `--no-supabase` to run without database writes.
+
+### Querying persisted reports
+
+Latest report for a source:
+
+```sql
+select snapshot_date, source, report_type, report_version, record_count, created_at
+from public.market_reports
+where source = 'southport_daily'
+order by snapshot_date desc
+limit 1;
+```
+
+Fetch markdown + JSON for a specific day/version:
+
+```sql
+select report_markdown, report_json
+from public.market_reports
+where snapshot_date = '2025-03-05'
+  and source = 'southport_daily'
+  and report_type = 'market_report'
+  and report_version = 'v1';
+```

@@ -106,6 +106,6 @@ def test_resume_from_relay_script_runs_pipeline(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert (reports_dir / "market_analysis.json").exists()
-    assert (reports_dir / "market_report.json").exists()
+    assert not (reports_dir / "market_report.json").exists()
     updated = json.loads(handoff.read_text(encoding="utf-8"))
     assert updated["status"] == "completed"

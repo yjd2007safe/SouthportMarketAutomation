@@ -22,6 +22,7 @@ def test_run_daily_end_to_end_with_source_csv(tmp_path):
         [
             "bash",
             str(script),
+            "--no-supabase",
             "--source",
             str(source),
             "--date",
@@ -48,7 +49,7 @@ def test_run_daily_end_to_end_with_source_csv(tmp_path):
     assert any(raw_dir.iterdir())
     assert any(normalized_dir.iterdir())
     assert (reports_dir / "daily_analysis.json").exists()
-    assert (reports_dir / "daily_report.json").exists()
+    assert not (reports_dir / "daily_report.json").exists()
     assert (log_dir / "run_2025-03-05.log").exists()
 
 
@@ -104,6 +105,7 @@ def test_run_daily_relay_mode_falls_back_to_http_when_relay_fails(tmp_path):
             [
                 "bash",
                 str(script),
+                "--no-supabase",
                 "--source",
                 f"http://127.0.0.1:{port}/ok.csv",
                 "--date",
@@ -144,7 +146,7 @@ def test_run_daily_rejects_invalid_fetch_mode(tmp_path):
 
     script = Path(__file__).resolve().parents[1] / "scripts" / "run_daily.sh"
     result = subprocess.run(
-        ["bash", str(script), "--source", str(source), "--fetch-mode", "bad"],
+        ["bash", str(script), "--no-supabase", "--source", str(source), "--fetch-mode", "bad"],
         check=False,
         capture_output=True,
         text=True,
@@ -157,7 +159,7 @@ def test_run_daily_rejects_invalid_fetch_mode(tmp_path):
 def test_run_daily_requires_source_or_normalized_input(tmp_path):
     script = Path(__file__).resolve().parents[1] / "scripts" / "run_daily.sh"
     result = subprocess.run(
-        ["bash", str(script), "--reports-dir", str(tmp_path / "reports")],
+        ["bash", str(script), "--no-supabase", "--reports-dir", str(tmp_path / "reports")],
         check=False,
         capture_output=True,
         text=True,
@@ -251,6 +253,7 @@ def test_run_daily_with_source_list_json(tmp_path):
             [
                 "bash",
                 str(script),
+                "--no-supabase",
                 "--source-list",
                 str(source_list),
                 "--date",
@@ -276,7 +279,7 @@ def test_run_daily_with_source_list_json(tmp_path):
     assert any(raw_dir.iterdir())
     assert any(normalized_dir.iterdir())
     assert (reports_dir / "market_analysis.json").exists()
-    assert (reports_dir / "market_report.json").exists()
+    assert not (reports_dir / "market_report.json").exists()
 
 
 def test_run_daily_with_source_list_html_parses_to_structured_json(tmp_path):
@@ -322,6 +325,7 @@ def test_run_daily_with_source_list_html_parses_to_structured_json(tmp_path):
             [
                 "bash",
                 str(script),
+                "--no-supabase",
                 "--source-list",
                 str(source_list),
                 "--date",
@@ -420,6 +424,7 @@ def test_run_daily_source_list_partial_success_with_blocked_source(tmp_path):
             [
                 "bash",
                 str(script),
+                "--no-supabase",
                 "--source-list",
                 str(source_list),
                 "--date",
@@ -503,6 +508,7 @@ def test_run_daily_marks_parse_failed_when_html_has_zero_records(tmp_path):
             [
                 "bash",
                 str(script),
+                "--no-supabase",
                 "--source-list",
                 str(source_list),
                 "--date",
@@ -585,6 +591,7 @@ def test_run_daily_source_list_continues_on_challenge_blocked_html(tmp_path):
             [
                 "bash",
                 str(script),
+                "--no-supabase",
                 "--source-list",
                 str(source_list),
                 "--date",
@@ -684,6 +691,7 @@ def test_run_daily_source_list_continues_on_parse_failed_when_one_source_succeed
             [
                 "bash",
                 str(script),
+                "--no-supabase",
                 "--source-list",
                 str(source_list),
                 "--date",
@@ -722,7 +730,7 @@ def test_run_daily_rejects_invalid_stability_profile(tmp_path):
 
     script = Path(__file__).resolve().parents[1] / "scripts" / "run_daily.sh"
     result = subprocess.run(
-        ["bash", str(script), "--source", str(source), "--stability-profile", "turbo"],
+        ["bash", str(script), "--no-supabase", "--source", str(source), "--stability-profile", "turbo"],
         check=False,
         capture_output=True,
         text=True,
@@ -772,6 +780,7 @@ def test_run_daily_creates_relay_handoff_and_times_out_without_payload(tmp_path)
             [
                 "bash",
                 str(script),
+                "--no-supabase",
                 "--source-list",
                 str(source_list),
                 "--date",
@@ -884,6 +893,7 @@ def test_run_daily_resumes_with_manual_relay_payload(tmp_path):
             [
                 "bash",
                 str(script),
+                "--no-supabase",
                 "--source-list",
                 str(source_list),
                 "--date",
@@ -969,6 +979,7 @@ def test_run_daily_source_list_passes_navigation_profile_metadata(tmp_path):
             [
                 "bash",
                 str(script),
+                "--no-supabase",
                 "--source-list",
                 str(source_list),
                 "--date",
@@ -1033,6 +1044,7 @@ def test_run_daily_source_list_global_dedup_and_provenance(tmp_path):
             [
                 "bash",
                 str(script),
+                "--no-supabase",
                 "--source-list",
                 str(source_list),
                 "--date",

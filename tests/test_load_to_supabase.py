@@ -106,3 +106,53 @@ def test_run_load_skips_html_raw_payloads(tmp_path):
     assert captured[0]["url"].endswith(
         "/rest/v1/clean_listings_snapshot?on_conflict=snapshot_date%2Csource%2Clisting_key"
     )
+
+
+def test_prepare_market_report_row():
+    row = load_to_supabase.prepare_market_report_row(
+        snapshot_date="2025-03-05",
+        source="daily",
+        report_type="market_report",
+        report_version="v1",
+        record_count=3,
+        report_markdown="# Report",
+        report_json={"record_count": 3, "rows": []},
+    )
+
+    assert row["snapshot_date"] == "2025-03-05"
+    assert row["source"] == "daily"
+    assert row["report_type"] == "market_report"
+    assert row["report_version"] == "v1"
+    assert row["record_count"] == 3
+
+
+def test_run_load_upserts_market_report_when_provided(tmp_path):
+    normalized = tmp_path / "normalized.json"
+    normalized.write_text(json.dumps([{"id": "x1", "rent": 1800}]), encoding="utf-8")
+
+    report_json = tmp_path / "market_report.json"
+    report_json.write_text(json.dumps({"record_count": 1, "rows": []}), encoding="utf-8")
+    report_md = tmp_path / "market_report.md"
+    report_md.write_text("# Southport Market Report\n", encoding="utf-8")
+
+    captured = []
+
+    def fake_request(**kwargs):
+        captured.append(kwargs)
+
+    load_to_supabase.run_load(
+        normalized_input=Path(normalized),
+        snapshot_date="2025-03-05",
+        source="daily",
+        report_json=Path(report_json),
+        report_markdown=Path(report_md),
+        report_type="market_report",
+        report_version="v1",
+        env={"SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key"},
+        request_fn=fake_request,
+    )
+
+    assert len(captured) == 2
+    assert captured[1]["url"].endswith(
+        "/rest/v1/market_reports?on_conflict=snapshot_date%2Csource%2Creport_type%2Creport_version"
+    )
