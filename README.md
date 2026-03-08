@@ -18,6 +18,30 @@ pip install -r requirements.txt
 pytest
 ```
 
+### Repository hygiene for runtime artifacts
+
+Runtime outputs from normal operation must **not** dirty git status.
+
+- Runtime directories (`data/`, `logs/`, `reports/`) are ignored by default.
+- If you need intentionally versioned examples, keep them in allowlisted documentation/fixture paths (for example `data/fixtures/` or `data/docs/`).
+- Before running automation that expects a clean worktree (for example `auto_dev_pipeline develop`), run:
+
+```bash
+scripts/auto_dev_preflight.sh
+```
+
+The preflight helper will:
+
+1. Confirm whether the repo is clean.
+2. Refuse to proceed when non-runtime files are modified.
+3. Auto-stash modified/untracked runtime artifacts with a timestamped stash message when safe.
+
+You can enforce this rule in local/CI checks with:
+
+```bash
+scripts/check_runtime_hygiene.sh
+```
+
 ### 3) Run ingest bootstrap command
 
 Use the helper script to run the ingest module with `src/` on `PYTHONPATH`.

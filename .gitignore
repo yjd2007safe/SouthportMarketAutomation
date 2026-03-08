@@ -1,7 +1,25 @@
 __pycache__/
 .env
 .venv/
-data/raw/
 .dev_pipeline/
-error.log
 .vercel/
+error.log
+
+# Runtime pipeline outputs should remain untracked by default.
+data/*
+!data/.gitkeep
+!data/README.md
+!data/docs/
+!data/docs/**
+!data/fixtures/
+!data/fixtures/**
+!data/sources/
+!data/sources/**
+
+logs/*
+!logs/.gitkeep
+!logs/README.md
+
+reports/*
+!reports/.gitkeep
+!reports/README.md
