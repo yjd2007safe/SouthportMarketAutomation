@@ -111,6 +111,11 @@ def prepare_clean_rows(rows: Iterable[JsonDict], snapshot_date: str, source: str
                 "rent": row.get("rent") or row.get("price") or row.get("monthly_rent"),
                 "bedrooms": row.get("bedrooms") or row.get("beds"),
                 "size_sqft": row.get("size_sqft") or row.get("sqft"),
+                "property_category": row.get("property_category"),
+                "land_area": row.get("land_area"),
+                "land_area_unit": row.get("land_area_unit"),
+                "building_area": row.get("building_area"),
+                "building_area_unit": row.get("building_area_unit"),
             }
         )
     return output

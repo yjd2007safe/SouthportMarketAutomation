@@ -404,3 +404,23 @@ where snapshot_date = '2025-03-05'
   and report_type = 'market_report'
   and report_version = 'v1';
 ```
+
+
+## Sales report scheduling rules (Asia/Shanghai)
+
+`run_daily.sh` now schedules sales reports by run date (Asia/Shanghai):
+
+| Run day condition | Generated report(s) | Period window |
+|---|---|---|
+| Not Saturday and not day 1 | none | n/a |
+| Saturday | `weekly_sales_report` | previous Sunday → current Saturday |
+| Day 1 of month | `monthly_sales_report` | previous calendar month |
+| Saturday + day 1 | both weekly + monthly | both windows above |
+
+Examples:
+- Run date `2025-03-08` (Saturday) => weekly period `2025-03-02` to `2025-03-08`.
+- Run date `2025-03-01` (day 1) => monthly period `2025-02-01` to `2025-02-28`.
+- Run date `2025-02-01` (Saturday + day 1) => generates both report types.
+
+Sales report JSON schema is now `v2` and includes `period_start`, `period_end`, `overall_stats`, `category_breakdown`, and `detailed_records` grouped by `detached_house`, `townhouse`, and `apartment`.
+Normalized listing persistence also carries `property_category`, `land_area`, `land_area_unit`, `building_area`, and `building_area_unit`.

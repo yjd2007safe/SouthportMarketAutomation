@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Dict, Iterable, List, Optional
+import re
+from typing import Any, Dict, Iterable, List
 from urllib.parse import urlsplit, urlunsplit
 
 Record = Dict[str, Any]
@@ -12,6 +13,43 @@ Record = Dict[str, Any]
 
 def _clean_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _to_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    text = str(value).strip().lower().replace(",", "")
+    m = re.search(r"\d+(?:\.\d+)?", text)
+    if not m:
+        return None
+    try:
+        return float(m.group(0))
+    except ValueError:
+        return None
+
+
+def _detect_area_unit(value: Any, default: str = "sqm") -> str | None:
+    text = _clean_text(value).lower()
+    if not text:
+        return None
+    if any(tok in text for tok in ("sqft", "ft²", "ft2", "square feet")):
+        return "sqft"
+    if any(tok in text for tok in ("sqm", "m²", "m2", "square metre", "square meter")):
+        return "sqm"
+    return default
+
+
+def _normalize_property_category(value: Any) -> str | None:
+    text = _clean_text(value).lower()
+    if not text:
+        return None
+    if any(tok in text for tok in ("townhouse", "town home", "town-house", "town house")):
+        return "townhouse"
+    if any(tok in text for tok in ("apartment", "unit", "flat")):
+        return "apartment"
+    if any(tok in text for tok in ("detached", "house", "single family", "single-family")):
+        return "detached_house"
+    return None
 
 
 def canonical_url(value: Any) -> str:
@@ -60,6 +98,35 @@ def stable_global_key(record: Record) -> str:
     return f"row:{hashlib.sha256(stable.encode('utf-8')).hexdigest()[:24]}"
 
 
+def _apply_property_field_fallbacks(normalized: Record) -> None:
+    category = _normalize_property_category(
+        normalized.get("property_category")
+        or normalized.get("property_type")
+        or normalized.get("dwelling_type")
+        or normalized.get("type")
+    )
+    if category:
+        normalized["property_category"] = category
+
+    if normalized.get("building_area") in (None, ""):
+        building_area = _to_float(normalized.get("building_size") or normalized.get("internal_area") or normalized.get("floor_area"))
+        if building_area is not None:
+            normalized["building_area"] = building_area
+    if normalized.get("building_area_unit") in (None, ""):
+        unit = _detect_area_unit(normalized.get("building_size") or normalized.get("floor_area"))
+        if unit:
+            normalized["building_area_unit"] = unit
+
+    if normalized.get("land_area") in (None, ""):
+        land_area = _to_float(normalized.get("land_size") or normalized.get("lot_size"))
+        if land_area is not None:
+            normalized["land_area"] = land_area
+    if normalized.get("land_area_unit") in (None, ""):
+        unit = _detect_area_unit(normalized.get("land_size") or normalized.get("lot_size"))
+        if unit:
+            normalized["land_area_unit"] = unit
+
+
 def normalize_record(record: Record, *, source_url: str = "", source_site: str = "") -> Record:
     normalized = dict(record)
 
@@ -76,6 +143,8 @@ def normalize_record(record: Record, *, source_url: str = "", source_site: str =
     src_url = canonical_url(normalized.get("source_url") or source_url)
     if src_url:
         normalized["source_url"] = src_url
+
+    _apply_property_field_fallbacks(normalized)
 
     global_key = stable_global_key(normalized)
     normalized["global_key"] = global_key

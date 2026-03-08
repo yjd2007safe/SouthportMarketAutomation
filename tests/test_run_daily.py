@@ -1078,3 +1078,68 @@ def test_run_daily_source_list_global_dedup_and_provenance(tmp_path):
     analysis = json.loads((reports_dir / "market_analysis.json").read_text(encoding="utf-8"))
     assert analysis["record_count"] == 1
 
+
+
+def test_run_daily_skips_report_on_non_saturday_non_month_start(tmp_path):
+    normalized = tmp_path / "normalized.json"
+    normalized.write_text("[]", encoding="utf-8")
+    reports_dir = tmp_path / "reports"
+    log_dir = tmp_path / "logs"
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "run_daily.sh"
+    result = subprocess.run(
+        [
+            "bash",
+            str(script),
+            "--no-supabase",
+            "--normalized-input",
+            str(normalized),
+            "--date",
+            "2025-03-05",
+            "--reports-dir",
+            str(reports_dir),
+            "--log-dir",
+            str(log_dir),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert "[stage:report] skipped" in result.stdout
+
+
+def test_run_daily_generates_weekly_and_monthly_when_both_conditions(tmp_path):
+    normalized = tmp_path / "normalized.json"
+    normalized.write_text("[]", encoding="utf-8")
+    reports_dir = tmp_path / "reports"
+    log_dir = tmp_path / "logs"
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "run_daily.sh"
+    result = subprocess.run(
+        [
+            "bash",
+            str(script),
+            "--no-supabase",
+            "--normalized-input",
+            str(normalized),
+            "--date",
+            "2025-02-01",
+            "--reports-dir",
+            str(reports_dir),
+            "--log-dir",
+            str(log_dir),
+            "--report-local-output-mode",
+            "persist",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert "mode=weekly" in result.stdout
+    assert "mode=monthly" in result.stdout
+    assert (reports_dir / "market_report_weekly.json").exists()
+    assert (reports_dir / "market_report_monthly.json").exists()

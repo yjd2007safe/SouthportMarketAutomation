@@ -3,121 +3,75 @@ import json
 import report
 
 
-def _analysis_payload():
-    return {
-        "record_count": 5,
-        "price_level_distribution": {
-            "bins": {"budget": 1, "mid": 2, "premium": 1, "luxury": 0},
-            "missing_price": 1,
+def test_weekly_sales_report_includes_category_breakdown_and_details(tmp_path):
+    rows = [
+        {
+            "global_key": "id:a",
+            "status": "sold",
+            "sold_date": "2025-03-03",
+            "property_category": "house",
+            "price": 1000000,
+            "address": "1 A St",
+            "land_area": 400,
+            "land_area_unit": "sqm",
+            "building_area": 180,
+            "building_area_unit": "sqm",
         },
-        "rent_trend": [
-            {"month": "2025-01", "average_rent": 1800.0, "sample_size": 3},
-            {"month": "2025-02", "average_rent": 2200.0, "sample_size": 1},
-        ],
-        "listing_volume_trend": [
-            {"month": "2025-01", "listing_count": 4},
-            {"month": "2025-02", "listing_count": 1},
-        ],
-        "listing_age_proxy": {
-            "sample_size": 3,
-            "average_days": 14.5,
-            "median_days": 12.0,
+        {
+            "global_key": "id:b",
+            "status": "sold",
+            "sold_date": "2025-03-04",
+            "property_category": "apartment",
+            "price": 700000,
+            "address": "2 B St",
         },
-        "bedroom_size_mix": [
-            {"segment": "1_bed|compact", "count": 2, "median_rent": 1700.0},
-            {"segment": "2_bed|standard", "count": 1, "median_rent": 2300.0},
-        ],
-    }
-
-
-def test_run_report_writes_markdown_csv_and_json(tmp_path):
-    reports_dir = tmp_path / "reports"
-    reports_dir.mkdir()
-    (reports_dir / "market_analysis.json").write_text(
-        json.dumps(_analysis_payload()), encoding="utf-8"
-    )
+        {
+            "global_key": "id:c",
+            "status": "listed",
+            "snapshot_date": "2025-03-04",
+            "property_category": "townhouse",
+            "price": 800000,
+        },
+    ]
+    normalized = tmp_path / "normalized.json"
+    normalized.write_text(json.dumps(rows), encoding="utf-8")
 
     outputs = report.run_report(
-        reports_dir,
+        tmp_path,
         "market_analysis",
-        "market_report",
-        snapshot_date="2025-03-05",
+        "weekly",
+        snapshot_date="2025-03-08",
         source="southport_daily",
-        report_type="market_report",
-        report_version="v1",
+        report_type="weekly_sales_report",
+        report_version="v2",
+        report_mode="weekly",
+        records_input=normalized,
         local_output_mode="persist",
         persist_supabase=False,
     )
 
-    assert set(outputs.keys()) == {"json", "csv", "markdown"}
-    assert outputs["json"].exists()
-    assert outputs["csv"].exists()
-    assert outputs["markdown"].exists()
-
-    markdown = outputs["markdown"].read_text(encoding="utf-8")
-    assert "# Southport Market Report" in markdown
-    assert "## Price Level Distribution" in markdown
-    assert "## Rent Trend" in markdown
-    assert "## Listing Volume Trend" in markdown
-    assert "## Listing Age Proxy" in markdown
-    assert "## Bedroom/Size Mix" in markdown
-
-    csv_text = outputs["csv"].read_text(encoding="utf-8")
-    assert "dimension,section,metric,value" in csv_text
-    assert "price_level_distribution,Price Level Distribution,bin:budget,1" in csv_text
+    payload = json.loads(outputs["json"].read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "v2"
+    assert payload["period_start"] == "2025-03-02"
+    assert payload["period_end"] == "2025-03-08"
+    assert payload["overall_stats"]["sold_count"] == 2
+    assert payload["category_breakdown"]["detached_house"]["sold_count"] == 1
+    assert payload["category_breakdown"]["apartment"]["sold_count"] == 1
+    assert payload["detailed_records"]["detached_house"][0]["land_area"] == 400
 
 
-def test_load_analysis_stats_gracefully_handles_missing_or_partial_input(tmp_path):
-    reports_dir = tmp_path / "reports"
-    reports_dir.mkdir()
-
-    missing_stats = report.load_analysis_stats(reports_dir, "nope")
-    assert missing_stats["record_count"] == 0
-    assert missing_stats["rent_trend"] == []
-
-    partial = {"record_count": 3, "listing_age_proxy": {"sample_size": 2}}
-    (reports_dir / "partial.json").write_text(json.dumps(partial), encoding="utf-8")
-
-    loaded = report.load_analysis_stats(reports_dir, "partial")
-    assert loaded["record_count"] == 3
-    assert loaded["rent_trend"] == []
-    assert loaded["listing_age_proxy"] == {"sample_size": 2}
-
-
-def test_parse_args_reads_cli_flags():
+def test_parse_args_accepts_report_mode_and_records_input():
     args = report.parse_args(
         [
             "--reports-dir",
             "reports",
-            "--analysis-prefix",
-            "daily_analysis",
-            "--output-prefix",
-            "daily_report",
             "--date",
-            "2025-03-05",
+            "2025-03-08",
+            "--report-mode",
+            "weekly",
+            "--records-input",
+            "data/normalized.json",
         ]
     )
-    assert args.reports_dir == "reports"
-    assert args.analysis_prefix == "daily_analysis"
-    assert args.output_prefix == "daily_report"
-
-
-def test_run_report_temp_mode_writes_no_persistent_artifacts(tmp_path):
-    reports_dir = tmp_path / "reports"
-    reports_dir.mkdir()
-    (reports_dir / "market_analysis.json").write_text(json.dumps(_analysis_payload()), encoding="utf-8")
-
-    outputs = report.run_report(
-        reports_dir,
-        "market_analysis",
-        "market_report",
-        snapshot_date="2025-03-05",
-        source="southport_daily",
-        report_type="market_report",
-        report_version="v1",
-        local_output_mode="temp",
-        persist_supabase=False,
-    )
-
-    assert outputs == {}
-    assert not (reports_dir / "market_report.json").exists()
+    assert args.report_mode == "weekly"
+    assert args.records_input == "data/normalized.json"
