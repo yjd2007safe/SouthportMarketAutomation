@@ -992,3 +992,77 @@ def test_run_daily_source_list_passes_navigation_profile_metadata(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert "nav_profile=onthehouse_sale_southport" in result.stdout
+
+def test_run_daily_source_list_global_dedup_and_provenance(tmp_path):
+    import http.server
+    import json
+    import socketserver
+    import threading
+
+    source_dir = tmp_path / "http_sources"
+    source_dir.mkdir()
+    row = "listing_id,address,url,rent,snapshot_date,bedrooms,size_sqft\n"
+    listing = "dup-001,1 Main St,https://example.com/property/1,2100,2025-03-05,2,700\n"
+    (source_dir / "a.csv").write_text(row + listing, encoding="utf-8")
+    (source_dir / "b.csv").write_text(row + listing, encoding="utf-8")
+
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(source_dir))
+    with socketserver.TCPServer(("127.0.0.1", 0), handler) as httpd:
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        port = httpd.server_address[1]
+
+        source_list = tmp_path / "sources.json"
+        source_list.write_text(
+            json.dumps(
+                [
+                    {"url": f"http://127.0.0.1:{port}/a.csv", "site": "alpha", "category": "search", "confidence": 0.9, "notes": "a"},
+                    {"url": f"http://127.0.0.1:{port}/b.csv", "site": "beta", "category": "search", "confidence": 0.9, "notes": "b"},
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        raw_dir = tmp_path / "raw"
+        normalized_dir = tmp_path / "normalized"
+        reports_dir = tmp_path / "reports"
+        log_dir = tmp_path / "logs"
+
+        script = Path(__file__).resolve().parents[1] / "scripts" / "run_daily.sh"
+        result = subprocess.run(
+            [
+                "bash",
+                str(script),
+                "--source-list",
+                str(source_list),
+                "--date",
+                "2025-03-05",
+                "--raw-dir",
+                str(raw_dir),
+                "--normalized-dir",
+                str(normalized_dir),
+                "--reports-dir",
+                str(reports_dir),
+                "--log-dir",
+                str(log_dir),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        httpd.shutdown()
+        thread.join(timeout=2)
+
+    assert result.returncode == 0, result.stderr
+    combined = normalized_dir / "normalized_2025-03-05_combined.json"
+    assert combined.exists()
+    payload = json.loads(combined.read_text(encoding="utf-8"))
+    assert len(payload) == 1
+    assert payload[0]["global_key"].startswith("id:")
+    assert payload[0]["source_url"].startswith("http://127.0.0.1:")
+    assert payload[0]["source_site"] == "127.0.0.1"
+
+    analysis = json.loads((reports_dir / "market_analysis.json").read_text(encoding="utf-8"))
+    assert analysis["record_count"] == 1
+

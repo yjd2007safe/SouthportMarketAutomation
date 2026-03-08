@@ -165,6 +165,7 @@ PY
   PRIORITY_HANDOFF_REASON=""
 
   NORMALIZED_PATHS=()
+  NORMALIZED_META=()
   RAW_PATHS=()
   SUMMARY_LINES=()
   SUCCESS_COUNT=0
@@ -352,6 +353,7 @@ PY
 
       if [[ "${NORMALIZED_STATUS}" == "ok" ]]; then
         NORMALIZED_PATHS+=("${NORMALIZED_PATH}")
+        NORMALIZED_META+=("${NORMALIZED_PATH}|${SOURCE_ITEM}")
         SUMMARY_LINES+=("ok|${SOURCE_ITEM}|${RAW_PATH}|${NORMALIZED_PATH}|${BACKEND_USED}|${ATTEMPTS}|${OUTCOME}|${DETAIL}|${DIAG_NAV_PROFILE}|${PARSED_COUNT}")
         SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
         log "[stage:normalize] complete source=${SOURCE_ITEM} normalized_path=${NORMALIZED_PATH} parsed_count=${PARSED_COUNT}"
@@ -432,6 +434,7 @@ PY
 
     RELAY_NORMALIZED_PATH="$(python3 -m relay_handoff materialize --handoff "${PRIORITY_HANDOFF_PATH}" --payload "${EXPECTED_PAYLOAD_PATH}" --normalized-dir "${NORMALIZED_DIR}")"
     NORMALIZED_PATHS+=("${RELAY_NORMALIZED_PATH}")
+    NORMALIZED_META+=("${RELAY_NORMALIZED_PATH}|${PRIORITY_SOURCE}")
     SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
     PRIORITY_RELAY_RESOLVED=1
     python3 - "${PRIORITY_HANDOFF_PATH}" "${EXPECTED_PAYLOAD_PATH}" "${RELAY_NORMALIZED_PATH}" <<'PY'
@@ -469,25 +472,36 @@ PY
 
   if [[ "${#NORMALIZED_PATHS[@]}" -gt 1 ]]; then
     COMBINED_PATH="${NORMALIZED_DIR}/normalized_${DATE}_combined.json"
-    python3 - "${COMBINED_PATH}" "${NORMALIZED_PATHS[@]}" <<'PY'
+    python3 - "${COMBINED_PATH}" "${NORMALIZED_META[@]}" <<'PY'
 from pathlib import Path
 import csv
 import json
 import sys
+from urllib.parse import urlparse
+
+from record_cleaning import normalize_and_dedupe_records
 
 output = Path(sys.argv[1])
-inputs = [Path(path) for path in sys.argv[2:]]
+meta_items = sys.argv[2:]
 rows = []
 
-for path in inputs:
+for item in meta_items:
+    path_text, source_url = item.split("|", 1)
+    path = Path(path_text)
+    site = (urlparse(source_url).hostname or "").lower()
+
+    source_rows = []
     if path.suffix.lower() == ".json":
         data = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(data, list):
-            rows.extend(data)
+            source_rows.extend(data)
     elif path.suffix.lower() == ".csv":
         with path.open("r", encoding="utf-8", newline="") as fh:
-            rows.extend(list(csv.DictReader(fh)))
+            source_rows.extend(list(csv.DictReader(fh)))
 
+    rows.extend(normalize_and_dedupe_records(source_rows, source_url=source_url, source_site=site))
+
+rows = normalize_and_dedupe_records(rows)
 output.write_text(json.dumps(rows, indent=2), encoding="utf-8")
 PY
     NORMALIZED_PATH="${COMBINED_PATH}"

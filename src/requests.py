@@ -44,6 +44,8 @@ SEARCH_INPUT_SELECTORS = (
     "input[name='q']",
 )
 
+_MANAGED_RELAY_PAGE_IDS: set[int] = set()
+
 
 @dataclass(frozen=True)
 class NavigationProfile:
@@ -534,8 +536,6 @@ def _fetch_via_relay(
     except ImportError as exc:
         raise RuntimeError("relay backend requires playwright") from exc
 
-    parsed = urlparse(url)
-    target_host = (parsed.hostname or "").lower()
     cdp_url = os.getenv("SMA_RELAY_CDP_URL", "http://127.0.0.1:9222")
     relay_auth_header, relay_auth_token = _resolve_relay_auth_header_and_token(cdp_url)
     connect_kwargs = {}
@@ -548,50 +548,45 @@ def _fetch_via_relay(
     with sync_playwright() as p:
         browser = p.chromium.connect_over_cdp(cdp_url, **connect_kwargs)
 
-        target_page = None
-        fallback_page = None
-
-        for context in browser.contexts:
-            for page in context.pages:
-                if fallback_page is None:
-                    fallback_page = page
-                page_host = (urlparse(page.url).hostname or "").lower()
-                if page_host == target_host or page_host.endswith(f".{target_host}"):
-                    target_page = page
-                    break
-            if target_page is not None:
-                break
-
-        if target_page is None:
-            if fallback_page is None:
-                browser.close()
-                raise RuntimeError("relay has no attached pages")
-            target_page = fallback_page
-
-        if navigation_profile is not None:
-            _navigate_listing_search(target_page, navigation_profile, timeout_ms, ready_timeout_ms)
-        else:
-            target_page.goto(url, wait_until="networkidle", timeout=timeout_ms)
-            target_page.wait_for_load_state("networkidle", timeout=timeout_ms)
-        for selector in LISTING_SELECTORS:
-            try:
-                target_page.wait_for_selector(selector, timeout=ready_timeout_ms)
-                break
-            except PlaywrightTimeoutError:
-                continue
-        if stability_policy.browser_settle_seconds > 0:
-            sleep_fn(stability_policy.browser_settle_seconds)
-
-        current_url = target_page.url
-        if navigation_profile is not None and not _url_matches_navigation_profile(current_url, navigation_profile):
+        if not browser.contexts:
             browser.close()
-            raise RuntimeError(
-                f"navigation profile {navigation_profile.name} landed on unexpected url: {current_url}"
-            )
+            raise RuntimeError("relay has no attached browser contexts")
 
-        html = target_page.content()
-        challenge = _classify_challenge(html)
-        browser.close()
+        managed_context = browser.contexts[0]
+        target_page = managed_context.new_page()
+        page_id = id(target_page)
+        _MANAGED_RELAY_PAGE_IDS.add(page_id)
+
+        try:
+            if navigation_profile is not None:
+                _navigate_listing_search(target_page, navigation_profile, timeout_ms, ready_timeout_ms)
+            else:
+                target_page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+                target_page.wait_for_load_state("networkidle", timeout=timeout_ms)
+            for selector in LISTING_SELECTORS:
+                try:
+                    target_page.wait_for_selector(selector, timeout=ready_timeout_ms)
+                    break
+                except PlaywrightTimeoutError:
+                    continue
+            if stability_policy.browser_settle_seconds > 0:
+                sleep_fn(stability_policy.browser_settle_seconds)
+
+            current_url = target_page.url
+            if navigation_profile is not None and not _url_matches_navigation_profile(current_url, navigation_profile):
+                raise RuntimeError(
+                    f"navigation profile {navigation_profile.name} landed on unexpected url: {current_url}"
+                )
+
+            html = target_page.content()
+            challenge = _classify_challenge(html)
+        finally:
+            if id(target_page) in _MANAGED_RELAY_PAGE_IDS:
+                try:
+                    target_page.close()
+                finally:
+                    _MANAGED_RELAY_PAGE_IDS.discard(id(target_page))
+            browser.close()
 
         if challenge:
             raise ChallengeDetectedError(challenge, "relay")

@@ -111,14 +111,10 @@ def test_load_records_supports_csv(tmp_path):
     )
 
     rows = analyze.load_records(csv_path)
-    assert rows == [
-        {
-            "rent": "1500",
-            "snapshot_date": "2025-01-01",
-            "bedrooms": "1",
-            "size_sqft": "500",
-        }
-    ]
+    assert len(rows) == 1
+    assert rows[0]["rent"] == "1500"
+    assert rows[0]["snapshot_date"] == "2025-01-01"
+    assert rows[0]["global_key"]
 
 
 def test_parse_args_reads_cli_flags():

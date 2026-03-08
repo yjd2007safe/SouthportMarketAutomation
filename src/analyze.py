@@ -15,6 +15,8 @@ from pathlib import Path
 from statistics import median
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from record_cleaning import normalize_and_dedupe_records
+
 PRICE_BINS: Sequence[Tuple[str, float, float]] = (
     ("budget", 0, 1500),
     ("mid", 1500, 2500),
@@ -50,21 +52,23 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 
 def load_records(input_path: Path) -> List[Dict[str, Any]]:
-    """Load rows from JSON or CSV with conservative parsing."""
+    """Load rows from JSON or CSV with conservative parsing and dedupe."""
     suffix = input_path.suffix.lower()
+    rows: List[Dict[str, Any]] = []
     if suffix == ".json":
         payload = json.loads(input_path.read_text(encoding="utf-8"))
         if isinstance(payload, list):
-            return [row for row in payload if isinstance(row, dict)]
-        if isinstance(payload, dict):
-            rows = payload.get("rows", [])
-            if isinstance(rows, list):
-                return [row for row in rows if isinstance(row, dict)]
-        return []
+            rows = [row for row in payload if isinstance(row, dict)]
+        elif isinstance(payload, dict):
+            nested = payload.get("rows", [])
+            if isinstance(nested, list):
+                rows = [row for row in nested if isinstance(row, dict)]
+        return normalize_and_dedupe_records(rows)
 
     if suffix == ".csv":
         with input_path.open("r", encoding="utf-8", newline="") as handle:
-            return [dict(row) for row in csv.DictReader(handle)]
+            rows = [dict(row) for row in csv.DictReader(handle)]
+        return normalize_and_dedupe_records(rows)
 
     raise ValueError(f"Unsupported input format: {suffix!r}")
 
