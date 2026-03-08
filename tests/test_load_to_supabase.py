@@ -36,6 +36,11 @@ def test_prepare_rows_are_deterministic():
             "rent": 2000,
             "bedrooms": 2,
             "size_sqft": 820,
+            "property_category": None,
+            "land_area": None,
+            "land_area_unit": None,
+            "building_area": None,
+            "building_area_unit": None,
         }
     ]
 

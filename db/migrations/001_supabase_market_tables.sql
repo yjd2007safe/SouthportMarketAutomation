@@ -19,6 +19,11 @@ create table if not exists public.clean_listings_snapshot (
   rent numeric,
   bedrooms integer,
   size_sqft numeric,
+  property_category text,
+  land_area numeric,
+  land_area_unit text,
+  building_area numeric,
+  building_area_unit text,
   payload jsonb not null,
   updated_at timestamptz not null default now(),
   primary key (snapshot_date, source, listing_key)

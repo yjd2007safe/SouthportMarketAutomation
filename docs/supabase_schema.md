@@ -13,6 +13,7 @@ Apply `db/migrations/001_supabase_market_tables.sql` in Supabase SQL editor or m
    - Grain: normalized row per listing/day.
    - Primary key: `(snapshot_date, source, listing_key)`.
    - Indexes: `(source, snapshot_date desc)`, `(rent)`.
+   - Additional normalized columns: `property_category`, `land_area`, `land_area_unit`, `building_area`, `building_area_unit`.
 
 3. `daily_market_summary`
    - Grain: one metric row per source/day.

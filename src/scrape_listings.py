@@ -161,6 +161,40 @@ def _to_int(value: Any) -> Optional[int]:
     return int(number)
 
 
+def _normalize_property_category(value: Any) -> Optional[str]:
+    text = _clean_text(str(value or "")).lower()
+    if not text:
+        return None
+    if any(token in text for token in ("townhouse", "town home", "town-home", "town house")):
+        return "townhouse"
+    if any(token in text for token in ("apartment", "unit", "flat")):
+        return "apartment"
+    if any(token in text for token in ("detached", "house", "single family", "single-family")):
+        return "detached_house"
+    return None
+
+
+def _extract_area(value: Any, fallback_unit: str = "sqm") -> tuple[Optional[float], Optional[str]]:
+    if value in (None, ""):
+        return None, None
+    unit = None
+    number = None
+    if isinstance(value, dict):
+        number = _to_number(value.get("value") or value.get("size") or value.get("area"))
+        raw_unit = value.get("unitCode") or value.get("unitText") or value.get("unit")
+        unit = _clean_text(str(raw_unit or "")).lower() or None
+    else:
+        text = _clean_text(str(value)).lower()
+        number = _to_number(text)
+        if "sqft" in text or "ft²" in text or "ft2" in text:
+            unit = "sqft"
+        elif "sqm" in text or "m²" in text or "m2" in text:
+            unit = "sqm"
+    if number is None:
+        return None, None
+    return number, unit or fallback_unit
+
+
 def _stable_listing_id(*parts: Any) -> str:
     joined = "|".join(str(part).strip().lower() for part in parts if part not in (None, ""))
     digest = hashlib.sha1(joined.encode("utf-8")).hexdigest()
@@ -314,10 +348,15 @@ class OnthehouseAdapter(SiteAdapter):
         bathrooms = _to_number(obj.get("numberOfBathroomsTotal") or obj.get("bathrooms") or obj.get("baths"))
 
         floor_size = obj.get("floorSize")
-        if isinstance(floor_size, dict):
-            size = _to_number(floor_size.get("value"))
-        else:
-            size = _to_number(obj.get("size_sqft") or obj.get("landSize") or floor_size)
+        building_area, building_area_unit = _extract_area(
+            floor_size or obj.get("buildingArea") or obj.get("internalArea") or obj.get("size_sqft")
+        )
+        land_area, land_area_unit = _extract_area(obj.get("landSize") or obj.get("landArea"))
+        size = building_area or land_area
+
+        property_category = _normalize_property_category(
+            obj.get("propertyType") or obj.get("propertyCategory") or obj.get("dwellingType")
+        )
 
         listed_date = obj.get("datePosted") or obj.get("listedDate") or obj.get("dateListed")
 
@@ -339,6 +378,11 @@ class OnthehouseAdapter(SiteAdapter):
             "bedrooms": bedrooms,
             "bathrooms": bathrooms,
             "size_sqft": size,
+            "property_category": property_category,
+            "land_area": land_area,
+            "land_area_unit": land_area_unit,
+            "building_area": building_area,
+            "building_area_unit": building_area_unit,
             "listed_date": listed_date,
             "source_site": self.site_name,
             "raw_snippet": snippet,
@@ -431,7 +475,14 @@ class RealestateAdapter(SiteAdapter):
         )
         bedrooms = _to_int(obj.get("bedrooms") or obj.get("beds"))
         bathrooms = _to_number(obj.get("bathrooms") or obj.get("baths"))
-        size = _to_number(obj.get("size") or obj.get("size_sqft") or obj.get("landSize"))
+        building_area, building_area_unit = _extract_area(
+            obj.get("buildingArea") or obj.get("internalArea") or obj.get("size") or obj.get("size_sqft")
+        )
+        land_area, land_area_unit = _extract_area(obj.get("landSize") or obj.get("landArea"))
+        size = building_area or land_area
+        property_category = _normalize_property_category(
+            obj.get("propertyType") or obj.get("propertyCategory") or obj.get("dwellingType")
+        )
         listed_date = obj.get("dateListed") or obj.get("listingDate")
 
         snippet = _clean_text(
@@ -455,6 +506,11 @@ class RealestateAdapter(SiteAdapter):
             "bedrooms": bedrooms,
             "bathrooms": bathrooms,
             "size_sqft": size,
+            "property_category": property_category,
+            "land_area": land_area,
+            "land_area_unit": land_area_unit,
+            "building_area": building_area,
+            "building_area_unit": building_area_unit,
             "listed_date": listed_date,
             "source_site": self.site_name,
             "raw_snippet": snippet,
