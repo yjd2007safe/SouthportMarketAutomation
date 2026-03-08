@@ -540,9 +540,42 @@ log "[stage:analyze] complete"
 
 log "[stage:report] schedule evaluation begin"
 mapfile -t REPORT_MODES < <(python3 - "${DATE}" <<'PY'
-from reporting_schedule import determine_report_modes
+from datetime import datetime
 import sys
-for mode in determine_report_modes(sys.argv[1]):
+
+run_date = sys.argv[1]
+
+
+def fallback_modes(day):
+    modes = []
+    if day.weekday() == 5:
+        modes.append("weekly")
+    if day.day == 1:
+        modes.append("monthly")
+    return modes
+
+
+try:
+    from reporting_schedule import determine_report_modes
+except Exception as exc:
+    print(
+        f"[stage:report] schedule evaluation import failed: {exc}; using fallback evaluator",
+        file=sys.stderr,
+    )
+    day = datetime.strptime(run_date, "%Y-%m-%d").date()
+    modes = fallback_modes(day)
+else:
+    try:
+        modes = determine_report_modes(run_date)
+    except Exception as exc:
+        print(
+            f"[stage:report] schedule evaluation failed: {exc}; using fallback evaluator",
+            file=sys.stderr,
+        )
+        day = datetime.strptime(run_date, "%Y-%m-%d").date()
+        modes = fallback_modes(day)
+
+for mode in modes:
     print(mode)
 PY
 )
