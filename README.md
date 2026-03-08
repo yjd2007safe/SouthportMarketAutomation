@@ -213,7 +213,7 @@ After `analyze` writes its outputs to `reports/`, run `report` to generate
 final market report payloads. By default, use Supabase persistence (`market_reports`) and no local report files.
 
 ```bash
-PYTHONPATH=src python -m report   --reports-dir reports   --analysis-prefix market_analysis   --output-prefix market_report   --date 2025-03-05   --source southport_daily   --persist-supabase
+PYTHONPATH=src python -m report   --reports-dir reports   --analysis-prefix market_analysis   --output-prefix market_report_weekly_exec   --date 2025-03-08   --source southport_daily   --report-mode weekly   --report-product exec   --report-type weekly_sales_report_exec   --report-version v3   --records-input data/normalized/listings.json   --persist-supabase
 ```
 
 ### Full pipeline example (ingest -> analyze -> report)
@@ -221,7 +221,7 @@ PYTHONPATH=src python -m report   --reports-dir reports   --analysis-prefix mark
 ```bash
 scripts/run_ingest.sh --source ./path/to/listings.csv --output-dir data/raw --filename snapshot
 PYTHONPATH=src python -m analyze --input data/normalized/listings.json --reports-dir reports --prefix market_analysis
-PYTHONPATH=src python -m report --reports-dir reports --analysis-prefix market_analysis --output-prefix market_report --date 2025-03-05 --source southport_daily --persist-supabase
+PYTHONPATH=src python -m report --reports-dir reports --analysis-prefix market_analysis --output-prefix market_report_monthly_detailed --date 2025-03-01 --source southport_daily --report-mode monthly --report-product detailed --report-type monthly_sales_report_detailed --report-version v3 --records-input data/normalized/listings.json --persist-supabase
 ```
 
 
@@ -394,15 +394,28 @@ order by snapshot_date desc
 limit 1;
 ```
 
-Fetch markdown + JSON for a specific day/version:
+Fetch weekly executive + detailed JSON payloads for a specific run date:
 
 ```sql
-select report_markdown, report_json
+select snapshot_date, report_type, report_version, report_json
 from public.market_reports
-where snapshot_date = '2025-03-05'
+where snapshot_date = '2025-03-08'
   and source = 'southport_daily'
-  and report_type = 'market_report'
-  and report_version = 'v1';
+  and report_type in ('weekly_sales_report_exec', 'weekly_sales_report_detailed')
+  and report_version = 'v3'
+order by report_type;
+```
+
+Fetch monthly executive + detailed markdown payloads:
+
+```sql
+select snapshot_date, report_type, report_markdown
+from public.market_reports
+where snapshot_date = '2025-03-01'
+  and source = 'southport_daily'
+  and report_type in ('monthly_sales_report_exec', 'monthly_sales_report_detailed')
+  and report_version = 'v3'
+order by report_type;
 ```
 
 
@@ -413,14 +426,14 @@ where snapshot_date = '2025-03-05'
 | Run day condition | Generated report(s) | Period window |
 |---|---|---|
 | Not Saturday and not day 1 | none | n/a |
-| Saturday | `weekly_sales_report` | previous Sunday → current Saturday |
-| Day 1 of month | `monthly_sales_report` | previous calendar month |
-| Saturday + day 1 | both weekly + monthly | both windows above |
+| Saturday | `weekly_sales_report_exec` + `weekly_sales_report_detailed` | previous Sunday → current Saturday |
+| Day 1 of month | `monthly_sales_report_exec` + `monthly_sales_report_detailed` | previous calendar month |
+| Saturday + day 1 | all four report products | both windows above |
 
 Examples:
 - Run date `2025-03-08` (Saturday) => weekly period `2025-03-02` to `2025-03-08`.
 - Run date `2025-03-01` (day 1) => monthly period `2025-02-01` to `2025-02-28`.
 - Run date `2025-02-01` (Saturday + day 1) => generates both report types.
 
-Sales report JSON schema is now `v2` and includes `period_start`, `period_end`, `overall_stats`, `category_breakdown`, and `detailed_records` grouped by `detached_house`, `townhouse`, and `apartment`.
+Sales report JSON schema is now `v3` with a shared sectioned structure across weekly/monthly + executive/detailed products: `cover_summary`, `overall_transactions`, `category_breakdown`, `market_dynamics`, `appendix`, and `data_quality_methodology`. Payloads also include period metadata and `comparison_baseline` fields.
 Normalized listing persistence also carries `property_category`, `land_area`, `land_area_unit`, `building_area`, and `building_area_unit`.
