@@ -12,6 +12,7 @@ create index if not exists idx_clean_snapshot_property_category
   on public.clean_listings_snapshot (property_category);
 
 -- Optional backfill from payload JSON when upstream rows already contain category hints.
+-- Backfills older deployments for v3 report compatibility.
 update public.clean_listings_snapshot
 set property_category = lower(coalesce(payload->>'property_category', payload->>'property_type'))
 where property_category is null
