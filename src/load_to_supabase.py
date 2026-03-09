@@ -256,11 +256,27 @@ def run_load(
     if report_json is not None and report_json.exists() and report_markdown is not None and report_markdown.exists():
         report_payload = json.loads(report_json.read_text(encoding="utf-8"))
         report_md = report_markdown.read_text(encoding="utf-8")
+
+        inferred_type = str(report_payload.get("report_type") or "").strip()
+        inferred_version = str(
+            report_payload.get("report_version")
+            or report_payload.get("schema_version")
+            or ""
+        ).strip()
+
+        resolved_report_type = report_type
+        resolved_report_version = report_version
+
+        if report_type == "market_report" and inferred_type:
+            resolved_report_type = inferred_type
+        if report_version == "v1" and inferred_version:
+            resolved_report_version = inferred_version
+
         report_row = prepare_market_report_row(
             snapshot_date=snapshot_date,
             source=source,
-            report_type=report_type,
-            report_version=report_version,
+            report_type=resolved_report_type,
+            report_version=resolved_report_version,
             record_count=int(report_payload.get("record_count", 0) or 0),
             report_markdown=report_md,
             report_json=report_payload,
