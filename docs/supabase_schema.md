@@ -1,6 +1,6 @@
 # Supabase Schema and Migration Notes
 
-Apply `db/migrations/001_supabase_market_tables.sql` in Supabase SQL editor or migration runner.
+Apply `db/migrations/001_supabase_market_tables.sql` first, then `db/migrations/002_align_clean_snapshot_and_report_types.sql` for older deployments that predate v3 reporting fields.
 
 ## Tables
 

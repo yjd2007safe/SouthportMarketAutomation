@@ -161,3 +161,45 @@ def test_run_load_upserts_market_report_when_provided(tmp_path):
     assert captured[1]["url"].endswith(
         "/rest/v1/market_reports?on_conflict=snapshot_date%2Csource%2Creport_type%2Creport_version"
     )
+
+
+def test_run_load_prefers_report_json_metadata_for_default_market_report(tmp_path):
+    normalized = tmp_path / "normalized.json"
+    normalized.write_text(json.dumps([{"id": "x1", "rent": 1800}]), encoding="utf-8")
+
+    report_json = tmp_path / "weekly_report.json"
+    report_json.write_text(
+        json.dumps(
+            {
+                "record_count": 1,
+                "report_type": "weekly_sales_report_detailed",
+                "schema_version": "v3",
+                "rows": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_md = tmp_path / "weekly_report.md"
+    report_md.write_text("# Weekly\n", encoding="utf-8")
+
+    captured = []
+
+    def fake_request(**kwargs):
+        captured.append(kwargs)
+
+    load_to_supabase.run_load(
+        normalized_input=Path(normalized),
+        snapshot_date="2025-03-05",
+        source="daily",
+        report_json=Path(report_json),
+        report_markdown=Path(report_md),
+        report_type="market_report",
+        report_version="v1",
+        env={"SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key"},
+        request_fn=fake_request,
+    )
+
+    assert len(captured) == 2
+    payload = json.loads(captured[1]["payload"].decode("utf-8"))
+    assert payload[0]["report_type"] == "weekly_sales_report_detailed"
+    assert payload[0]["report_version"] == "v3"
