@@ -289,6 +289,19 @@ Show CLI help:
 scripts/run_daily.sh --help
 ```
 
+### Daily relay preset (realestate + domain only)
+
+Use the pinned daily-task preset:
+
+```bash
+scripts/run_daily_relay_two_sites.sh 2026-03-09
+```
+
+Preset behavior:
+- Browser Relay CDP endpoint defaults to `http://127.0.0.1:18792` (override via `SMA_RELAY_CDP_URL`).
+- Source list fixed to `data/sources/southport_relay_two_sites.json` (realestate + domain only).
+- `--fetch-mode relay` enabled.
+
 
 ### Human-in-the-loop relay fallback (priority-source challenge/blocked)
 
