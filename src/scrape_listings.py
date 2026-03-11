@@ -36,6 +36,11 @@ _RESIDENTIAL_CARD_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+_DOMAIN_LISTING_RE = re.compile(
+    r'<li[^>]+data-testid=["\']listing-\d+["\'][^>]*>(.*?)</li>',
+    re.IGNORECASE | re.DOTALL,
+)
+
 _CHALLENGE_MARKERS = {
     "kasada": (
         "kasada",
@@ -617,7 +622,60 @@ class DomainAdapter(SiteAdapter):
         return "domain.com.au" in html.lower()
 
     def parse(self, url: str, html: str) -> List[Record]:
-        return []
+        records: List[Record] = []
+        for card_html in _DOMAIN_LISTING_RE.findall(html):
+            url_match = re.search(r'<a[^>]+href=["\'](https://www\.domain\.com\.au/[^"\']+)["\'][^>]*class=["\'][^"\']*address', card_html, re.IGNORECASE | re.DOTALL)
+            if not url_match:
+                continue
+            listing_url = _clean_text(url_match.group(1))
+
+            line1_match = re.search(r'data-testid=["\']address-line1["\'][^>]*>(.*?)</span>', card_html, re.IGNORECASE | re.DOTALL)
+            line2_match = re.search(r'data-testid=["\']address-line2["\'][^>]*>(.*?)</span>', card_html, re.IGNORECASE | re.DOTALL)
+            address = _clean_text(', '.join(filter(None, [
+                _clean_text(_strip_tags(line1_match.group(1))) if line1_match else '',
+                _clean_text(_strip_tags(line2_match.group(1))) if line2_match else '',
+            ]))).replace(', ,', ',')
+
+            price_match = re.search(r'data-testid=["\']listing-card-price["\'][^>]*>(.*?)</p>', card_html, re.IGNORECASE | re.DOTALL)
+            price_text = _clean_text(_strip_tags(price_match.group(1))) if price_match else ''
+            price = _to_int(price_text)
+
+            features = re.findall(r'data-testid=["\']property-features-text-container["\'][^>]*>(\d+(?:\.\d+)?)\s*<span[^>]*data-testid=["\']property-features-text["\'][^>]*>([^<]+)</span>', card_html, re.IGNORECASE | re.DOTALL)
+            bedrooms = bathrooms = car_spaces = None
+            for value, label in features:
+                ll = _clean_text(label).lower()
+                if ll.startswith('bed'):
+                    bedrooms = _to_int(value)
+                elif ll.startswith('bath'):
+                    bathrooms = _to_number(value)
+                elif ll.startswith('park') or ll.startswith('car'):
+                    car_spaces = _to_int(value)
+
+            property_category_match = re.search(r'data-testid=["\']listing-card-title["\'][^>]*>(.*?)</', card_html, re.IGNORECASE | re.DOTALL)
+            property_category = _normalize_property_category(_clean_text(_strip_tags(property_category_match.group(1))) if property_category_match else '')
+            snippet = _clean_text(f'{address} {price_text}')[:240]
+            record = {
+                'listing_id': _stable_listing_id(self.site_name, listing_url, address, price, bedrooms),
+                'url': listing_url,
+                'address': address or None,
+                'rent': price,
+                'price': price,
+                'bedrooms': bedrooms,
+                'bathrooms': bathrooms,
+                'size_sqft': None,
+                'property_category': property_category,
+                'land_area': None,
+                'land_area_unit': None,
+                'building_area': None,
+                'building_area_unit': None,
+                'listed_date': None,
+                'source_site': self.site_name,
+                'raw_snippet': snippet,
+            }
+            if car_spaces is not None:
+                record['car_spaces'] = car_spaces
+            records.append(record)
+        return _dedupe_by_id(records)
 
 
 def _strip_tags(value: str) -> str:
@@ -674,6 +732,9 @@ def detect_challenge_page(html: str) -> Optional[str]:
 def parse_listing_page(url: str, html: str) -> List[Record]:
     """Parse a listing/search HTML page into normalized records."""
     for adapter in ADAPTERS:
-        if adapter.matches_url(url) or adapter.can_parse_html(html):
+        if adapter.matches_url(url):
+            return adapter.parse(url, html)
+    for adapter in ADAPTERS:
+        if adapter.can_parse_html(html):
             return adapter.parse(url, html)
     return []
