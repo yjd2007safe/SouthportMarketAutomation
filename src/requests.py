@@ -478,7 +478,7 @@ def _fetch_via_browser(
 
             html = page.content()
             challenge = _classify_challenge(html)
-            if challenge:
+            if challenge and not _has_meaningful_listing_content(html):
                 if stability_policy.challenge_retry_once and attempt == 1:
                     challenge_retry_attempted = True
                     sleep_fn(stability_policy.challenge_retry_cooldown_seconds)
@@ -587,7 +587,7 @@ def _fetch_via_relay(
                     _MANAGED_RELAY_PAGE_IDS.discard(id(target_page))
             browser.close()
 
-        if challenge:
+        if challenge and not _has_meaningful_listing_content(html):
             raise ChallengeDetectedError(challenge, "relay")
         if not _has_meaningful_listing_content(html):
             raise RuntimeError("relay tab returned no meaningful listing content")
