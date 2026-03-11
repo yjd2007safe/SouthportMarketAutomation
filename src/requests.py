@@ -460,7 +460,7 @@ def _fetch_via_browser(
             if navigation_profile is not None:
                 _navigate_listing_search(page, navigation_profile, timeout_ms, ready_timeout_ms)
             else:
-                page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+                page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
             for selector in LISTING_SELECTORS:
                 try:
                     page.wait_for_selector(selector, timeout=ready_timeout_ms)
@@ -478,7 +478,7 @@ def _fetch_via_browser(
 
             html = page.content()
             challenge = _classify_challenge(html)
-            if challenge:
+            if challenge and not _has_meaningful_listing_content(html):
                 if stability_policy.challenge_retry_once and attempt == 1:
                     challenge_retry_attempted = True
                     sleep_fn(stability_policy.challenge_retry_cooldown_seconds)
@@ -561,8 +561,7 @@ def _fetch_via_relay(
             if navigation_profile is not None:
                 _navigate_listing_search(target_page, navigation_profile, timeout_ms, ready_timeout_ms)
             else:
-                target_page.goto(url, wait_until="networkidle", timeout=timeout_ms)
-                target_page.wait_for_load_state("networkidle", timeout=timeout_ms)
+                target_page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
             for selector in LISTING_SELECTORS:
                 try:
                     target_page.wait_for_selector(selector, timeout=ready_timeout_ms)
@@ -588,7 +587,7 @@ def _fetch_via_relay(
                     _MANAGED_RELAY_PAGE_IDS.discard(id(target_page))
             browser.close()
 
-        if challenge:
+        if challenge and not _has_meaningful_listing_content(html):
             raise ChallengeDetectedError(challenge, "relay")
         if not _has_meaningful_listing_content(html):
             raise RuntimeError("relay tab returned no meaningful listing content")
@@ -601,7 +600,7 @@ def _fetch_via_relay(
 def fetch_with_policy(
     url: str,
     *,
-    timeout: int = 10,
+    timeout: int = 20,
     config: Optional[FetchConfig] = None,
     max_attempts: Optional[int] = None,
     sleep_fn: Callable[[float], None] = time.sleep,

@@ -31,6 +31,16 @@ _JSON_ASSIGNMENT_RE = re.compile(
 
 _SCRIPT_TAG_RE = re.compile(r"<script[^>]*>(.*?)</script>", re.IGNORECASE | re.DOTALL)
 
+_RESIDENTIAL_CARD_RE = re.compile(
+    r'<article[^>]+data-testid=["\']ResidentialCard["\'][^>]*>(.*?)</article>',
+    re.IGNORECASE | re.DOTALL,
+)
+
+_DOMAIN_LISTING_RE = re.compile(
+    r'<li[^>]+data-testid=["\']listing-\d+["\'][^>]*>(.*?)</li>',
+    re.IGNORECASE | re.DOTALL,
+)
+
 _CHALLENGE_MARKERS = {
     "kasada": (
         "kasada",
@@ -408,6 +418,9 @@ class RealestateAdapter(SiteAdapter):
         for data in _extract_json_states(html):
             records.extend(self._records_from_state(url, data))
 
+        if not records:
+            records.extend(self._records_from_html_cards(url, html))
+
         return _dedupe_by_id(records)
 
     def _records_from_state(self, source_url: str, payload: Any) -> List[Record]:
@@ -497,6 +510,90 @@ class RealestateAdapter(SiteAdapter):
             )
         )[:240]
 
+        return self._build_record(
+            source_url=source_url,
+            listing_url=listing_url,
+            address=address,
+            price=price,
+            bedrooms=bedrooms,
+            bathrooms=bathrooms,
+            size=size,
+            property_category=property_category,
+            land_area=land_area,
+            land_area_unit=land_area_unit,
+            building_area=building_area,
+            building_area_unit=building_area_unit,
+            listed_date=listed_date,
+            snippet=snippet,
+        )
+
+    def _records_from_html_cards(self, source_url: str, html: str) -> List[Record]:
+        records: List[Record] = []
+        for card_html in _RESIDENTIAL_CARD_RE.findall(html):
+            address_match = re.search(
+                r'<h2[^>]*class=["\'][^"\']*residential-card__address-heading[^"\']*["\'][^>]*>.*?<a[^>]+href=["\']([^"\']+)["\'][^>]*>\s*<span[^>]*>(.*?)</span>',
+                card_html,
+                re.IGNORECASE | re.DOTALL,
+            )
+            if not address_match:
+                continue
+            listing_url = urljoin(source_url, _clean_text(address_match.group(1)))
+            address = _clean_text(_strip_tags(address_match.group(2)))
+
+            price_match = re.search(r'<span[^>]*class=["\'][^"\']*property-price[^"\']*["\'][^>]*>(.*?)</span>', card_html, re.IGNORECASE | re.DOTALL)
+            price_text = _clean_text(_strip_tags(price_match.group(1))) if price_match else ""
+            price = _to_int(price_text)
+
+            primary_match = re.search(r'<ul[^>]*residential-card__primary[^>]*aria-label=["\']([^"\']+)["\']', card_html, re.IGNORECASE | re.DOTALL)
+            primary_label = _clean_text(primary_match.group(1)) if primary_match else ""
+            property_category = _normalize_property_category(primary_label.split(' with ', 1)[0] if primary_label else "")
+            bedrooms = _to_int(_first_match(primary_label, r'(\d+)\s+bedrooms?'))
+            bathrooms = _to_number(_first_match(primary_label, r'(\d+(?:\.\d+)?)\s+bathrooms?'))
+            car_spaces = _to_int(_first_match(primary_label, r'(\d+)\s+car\s+spaces?'))
+            area_value, area_unit = (None, None)
+            if re.search(r'(sqm|m²|sq m|square metres?|square meters?)', primary_label, re.IGNORECASE):
+                area_value, area_unit = _extract_area(primary_label)
+
+            snippet = _clean_text(f"{address} {price_text} {primary_label}")[:240]
+            record = self._build_record(
+                source_url=source_url,
+                listing_url=listing_url,
+                address=address,
+                price=price,
+                bedrooms=bedrooms,
+                bathrooms=bathrooms,
+                size=area_value,
+                property_category=property_category,
+                land_area=area_value,
+                land_area_unit=area_unit,
+                building_area=None,
+                building_area_unit=None,
+                listed_date=None,
+                snippet=snippet,
+            )
+            if car_spaces is not None:
+                record["car_spaces"] = car_spaces
+            records.append(record)
+        return records
+
+    def _build_record(
+        self,
+        *,
+        source_url: str,
+        listing_url: str,
+        address: str,
+        price: Any,
+        bedrooms: Any,
+        bathrooms: Any,
+        size: Any,
+        property_category: Any,
+        land_area: Any,
+        land_area_unit: Any,
+        building_area: Any,
+        building_area_unit: Any,
+        listed_date: Any,
+        snippet: str,
+    ) -> Record:
         return {
             "listing_id": _stable_listing_id(self.site_name, listing_url, address, price, bedrooms),
             "url": listing_url,
@@ -525,7 +622,69 @@ class DomainAdapter(SiteAdapter):
         return "domain.com.au" in html.lower()
 
     def parse(self, url: str, html: str) -> List[Record]:
-        return []
+        records: List[Record] = []
+        for card_html in _DOMAIN_LISTING_RE.findall(html):
+            url_match = re.search(r'<a[^>]+href=["\'](https://www\.domain\.com\.au/[^"\']+)["\'][^>]*class=["\'][^"\']*address', card_html, re.IGNORECASE | re.DOTALL)
+            if not url_match:
+                continue
+            listing_url = _clean_text(url_match.group(1))
+
+            line1_match = re.search(r'data-testid=["\']address-line1["\'][^>]*>(.*?)</span>', card_html, re.IGNORECASE | re.DOTALL)
+            line2_match = re.search(r'data-testid=["\']address-line2["\'][^>]*>(.*?)</span>', card_html, re.IGNORECASE | re.DOTALL)
+            address = _clean_text(', '.join(filter(None, [
+                _clean_text(_strip_tags(line1_match.group(1))) if line1_match else '',
+                _clean_text(_strip_tags(line2_match.group(1))) if line2_match else '',
+            ]))).replace(', ,', ',')
+
+            price_match = re.search(r'data-testid=["\']listing-card-price["\'][^>]*>(.*?)</p>', card_html, re.IGNORECASE | re.DOTALL)
+            price_text = _clean_text(_strip_tags(price_match.group(1))) if price_match else ''
+            price = _to_int(price_text)
+
+            features = re.findall(r'data-testid=["\']property-features-text-container["\'][^>]*>(\d+(?:\.\d+)?)\s*<span[^>]*data-testid=["\']property-features-text["\'][^>]*>([^<]+)</span>', card_html, re.IGNORECASE | re.DOTALL)
+            bedrooms = bathrooms = car_spaces = None
+            for value, label in features:
+                ll = _clean_text(label).lower()
+                if ll.startswith('bed'):
+                    bedrooms = _to_int(value)
+                elif ll.startswith('bath'):
+                    bathrooms = _to_number(value)
+                elif ll.startswith('park') or ll.startswith('car'):
+                    car_spaces = _to_int(value)
+
+            property_category_match = re.search(r'data-testid=["\']listing-card-title["\'][^>]*>(.*?)</', card_html, re.IGNORECASE | re.DOTALL)
+            property_category = _normalize_property_category(_clean_text(_strip_tags(property_category_match.group(1))) if property_category_match else '')
+            snippet = _clean_text(f'{address} {price_text}')[:240]
+            record = {
+                'listing_id': _stable_listing_id(self.site_name, listing_url, address, price, bedrooms),
+                'url': listing_url,
+                'address': address or None,
+                'rent': price,
+                'price': price,
+                'bedrooms': bedrooms,
+                'bathrooms': bathrooms,
+                'size_sqft': None,
+                'property_category': property_category,
+                'land_area': None,
+                'land_area_unit': None,
+                'building_area': None,
+                'building_area_unit': None,
+                'listed_date': None,
+                'source_site': self.site_name,
+                'raw_snippet': snippet,
+            }
+            if car_spaces is not None:
+                record['car_spaces'] = car_spaces
+            records.append(record)
+        return _dedupe_by_id(records)
+
+
+def _strip_tags(value: str) -> str:
+    return re.sub(r"<[^>]+>", " ", value or "")
+
+
+def _first_match(text: str, pattern: str) -> Optional[str]:
+    match = re.search(pattern, text or "", re.IGNORECASE)
+    return match.group(1) if match else None
 
 
 def _address_to_text(address: Any) -> str:
@@ -573,6 +732,9 @@ def detect_challenge_page(html: str) -> Optional[str]:
 def parse_listing_page(url: str, html: str) -> List[Record]:
     """Parse a listing/search HTML page into normalized records."""
     for adapter in ADAPTERS:
-        if adapter.matches_url(url) or adapter.can_parse_html(html):
+        if adapter.matches_url(url):
+            return adapter.parse(url, html)
+    for adapter in ADAPTERS:
+        if adapter.can_parse_html(html):
             return adapter.parse(url, html)
     return []
