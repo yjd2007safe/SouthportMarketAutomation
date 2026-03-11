@@ -460,7 +460,7 @@ def _fetch_via_browser(
             if navigation_profile is not None:
                 _navigate_listing_search(page, navigation_profile, timeout_ms, ready_timeout_ms)
             else:
-                page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+                page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
             for selector in LISTING_SELECTORS:
                 try:
                     page.wait_for_selector(selector, timeout=ready_timeout_ms)
@@ -561,8 +561,7 @@ def _fetch_via_relay(
             if navigation_profile is not None:
                 _navigate_listing_search(target_page, navigation_profile, timeout_ms, ready_timeout_ms)
             else:
-                target_page.goto(url, wait_until="networkidle", timeout=timeout_ms)
-                target_page.wait_for_load_state("networkidle", timeout=timeout_ms)
+                target_page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
             for selector in LISTING_SELECTORS:
                 try:
                     target_page.wait_for_selector(selector, timeout=ready_timeout_ms)
@@ -601,7 +600,7 @@ def _fetch_via_relay(
 def fetch_with_policy(
     url: str,
     *,
-    timeout: int = 10,
+    timeout: int = 20,
     config: Optional[FetchConfig] = None,
     max_attempts: Optional[int] = None,
     sleep_fn: Callable[[float], None] = time.sleep,
