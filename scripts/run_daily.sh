@@ -332,15 +332,13 @@ if is_structured:
 else:
     html = raw_path.read_text(encoding="utf-8")
     challenge_provider = scrape_listings.detect_challenge_page(html)
-    if challenge_provider:
-        rows = []
+    rows = scrape_listings.parse_listing_page(source_item, html)
+    parsed_count = len(rows)
+    if challenge_provider and parsed_count == 0:
         status = "blocked"
-        parsed_count = 0
         block_reason = f"challenge:{challenge_provider}"
     else:
-        rows = scrape_listings.parse_listing_page(source_item, html)
-        status = "ok" if len(rows) >= 1 else "parse_failed"
-        parsed_count = len(rows)
+        status = "ok" if parsed_count >= 1 else "parse_failed"
         block_reason = ""
     out_path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
 
