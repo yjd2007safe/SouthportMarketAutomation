@@ -1,13 +1,13 @@
 [
   {
-    "url": "https://www.realestate.com.au/rent/in-southport-qld-4215,+qld+4215/list-1",
+    "url": "https://www.realestate.com.au/rent/in-southport,+qld+4215/list-1",
     "site": "realestate.com.au",
     "category": "search",
     "confidence": 0.98,
     "notes": "Primary target source (relay-only policy)."
   },
   {
-    "url": "https://www.domain.com.au/rent/southport-qld-4215-qld-4215/",
+    "url": "https://www.domain.com.au/rent/southport-qld-4215/",
     "site": "domain.com.au",
     "category": "search",
     "confidence": 0.97,
